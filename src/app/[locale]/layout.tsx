@@ -2,6 +2,9 @@ import "@/once-ui/styles/index.scss";
 import "@/once-ui/tokens/index.scss";
 
 import classNames from 'classnames';
+import { Analytics } from '@vercel/analytics/react';
+import { SpeedInsights } from '@vercel/speed-insights/next';
+import { PostHogProvider } from '@/components/PostHogProvider';
 
 import { Footer, Header, RouteGuard } from "@/components";
 import { baseURL, effects, style } from '@/app/resources'
@@ -101,6 +104,7 @@ export default async function RootLayout({
 	unstable_setRequestLocale(locale);
 	const messages = await getMessages();
 	return (
+		<PostHogProvider>
 		<NextIntlClientProvider messages={messages}>
 			<Flex
 				as="html" lang="en"
@@ -145,6 +149,9 @@ export default async function RootLayout({
 					<Footer/>
 				</Flex>
 			</Flex>
+			<Analytics />
+			<SpeedInsights />
 		</NextIntlClientProvider>
+		</PostHogProvider>
 	);
 }
