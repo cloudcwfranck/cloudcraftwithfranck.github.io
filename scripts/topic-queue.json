@@ -1,0 +1,25 @@
+{
+  "topics": [
+    "azure-gcc-high-aks-il4-deployment",
+    "fedramp-ato-automation-bicep-oscal",
+    "platform-one-bigbang-chainguard-zero-cve-images",
+    "nist-800-53-rev5-policy-as-code-azure",
+    "dod-il4-landing-zone-hub-spoke-architecture",
+    "aks-iron-bank-cosign-signature-verification",
+    "fedramp-high-azure-sentinel-siem-automation",
+    "poam-automation-oscal-azure-devops-pipeline",
+    "cmmc-level-2-azure-compliance-bicep",
+    "azure-government-gcc-high-vs-gcc-comparison",
+    "aks-hardening-cis-benchmark-azure-policy",
+    "zero-trust-network-architecture-azure-govcloud",
+    "azure-arc-kubernetes-dod-il5-compliance",
+    "devsecops-pipeline-aqua-security-aks",
+    "fedramp-high-log-analytics-workspace-design",
+    "azure-private-link-govcloud-data-exfiltration-prevention",
+    "oscal-component-definition-azure-kubernetes",
+    "stig-hardened-vm-images-azure-packer",
+    "supply-chain-security-sbom-azure-container-registry",
+    "continuous-ato-monitoring-azure-defender-oscal"
+  ],
+  "published": []
+}
