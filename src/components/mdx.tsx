@@ -1,10 +1,14 @@
 import { MDXRemote } from 'next-mdx-remote/rsc';
 import type { MDXRemoteProps } from 'next-mdx-remote/rsc';
 import React, { ReactNode } from 'react';
+import rehypePrettyCode from 'rehype-pretty-code';
+import rehypeSlug from 'rehype-slug';
+import rehypeAutolinkHeadings from 'rehype-autolink-headings';
 
 import { SmartImage, SmartLink, Text } from '@/once-ui/components';
 import { CodeBlock } from '@/once-ui/modules';
 import { HeadingLink } from '@/components';
+import { EnhancedPre } from '@/components/EnhancedPre';
 
 import { TextProps } from '@/once-ui/interfaces';
 import { SmartImageProps } from '@/once-ui/components/SmartImage';
@@ -133,18 +137,28 @@ const components = {
     h6: createHeading(6) as any,
     img: createImage as any,
     a: CustomLink as any,
+    pre: EnhancedPre as any,
     Table,
-    CodeBlock
+    CodeBlock,
 };
 
 type CustomMDXProps = MDXRemoteProps & {
     components?: typeof components;
 };
 
+const mdxOptions = {
+    rehypePlugins: [
+        rehypeSlug,
+        [rehypeAutolinkHeadings, { behavior: 'wrap' }] as any,
+        [rehypePrettyCode, { theme: 'github-dark', keepBackground: false }] as any,
+    ],
+};
+
 export async function CustomMDX(props: CustomMDXProps) {
     return (
         <MDXRemote
             {...props}
+            options={{ mdxOptions, ...(props.options || {}) }}
             components={{ ...components, ...(props.components || {}) }}
         />
     );

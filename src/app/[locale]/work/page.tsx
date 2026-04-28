@@ -8,13 +8,9 @@ import { useTranslations } from 'next-intl';
 export async function generateMetadata(
     {params: {locale}}: { params: { locale: string }}
 ) {
-
-    const t = await getTranslations();
-    const { work } = renderContent(t);
-
-	const title = work.title;
-	const description = work.description;
-	const ogImage = `https://${baseURL}/og?title=${encodeURIComponent(title)}`;
+	const title = 'Projects & Ventures';
+	const description = 'Cloud architecture projects: Civedra AI integrity platform, Amakili AI for Africa, Azure Landing Zone implementations, FedRAMP ATO automation, DoD IL4 deployments.';
+	const ogImage = `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
 
 	return {
 		title,
@@ -23,13 +19,8 @@ export async function generateMetadata(
 			title,
 			description,
 			type: 'website',
-			url: `https://${baseURL}/${locale}/work/`,
-			images: [
-				{
-					url: ogImage,
-					alt: title,
-				},
-			],
+			url: 'https://www.cloudcraftwithfranck.org/work',
+			images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
 		},
 		twitter: {
 			card: 'summary_large_image',
@@ -37,6 +28,7 @@ export async function generateMetadata(
 			description,
 			images: [ogImage],
 		},
+		alternates: { canonical: 'https://www.cloudcraftwithfranck.org/work' },
 	};
 }
 

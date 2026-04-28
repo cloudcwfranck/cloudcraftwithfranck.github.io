@@ -7,21 +7,19 @@ const person = {
     get name() {
         return `${this.firstName} ${this.lastName}`;
     },
-    role:      'Cloud Advocate and Instructor',
+    role:      'Principal Cloud & DevSecOps Architect | Entrepreneur',
     avatar:    '/images/avatar.jpg',
-    location:  'America/New_York',        // Expecting the IANA time zone identifier, e.g., 'Europe/Vienna'
-    languages: ['English', 'Spanish', 'German']  // optional: Leave the array empty if you don't want to display languages
+    location:  'America/New_York',
+    languages: ['English', 'Spanish', 'German']
 }
 
 const newsletter = {
     display: true,
     title: <>Subscribe to {person.firstName}'s Newsletter</>,
-    description: <>I occasionally write about cloud, AI, security, and share thoughts on the problem solving and critical solutions for cloud engineering.</>
+    description: <>Principal-level technical content on FedRAMP automation, Azure GCC High, AKS hardening, Platform One, and DoD cloud architecture — with real code.</>
 }
 
 const social = [
-    // Links are automatically displayed.
-    // Import new icons in /once-ui/icons.ts
     {
         name: 'GitHub',
         icon: 'github',
@@ -46,10 +44,10 @@ const social = [
 
 const home = {
     label: 'Home',
-    title: `${person.name}'s Website`,
-    description: `Hi, I’m Franck! I’m a ${person.role} passionate about simplifying cloud technologies that frustrate engineers and hold back businesses, while advocating, designing, teaching, and mentoring to create innovative solutions.`,
-    headline: <>Cloud Advocate and Instructor</>,
-    subline: <>I'm Franck, a cloud advocate and Instructor at <InlineCode>CloudCraftWithFranck</InlineCode>, where I craft intuitive<br/> cloud solution for engineers.</>
+    title: `Franck Kengne | Principal Cloud & DevSecOps Architect`,
+    description: `Principal Cloud & DevSecOps Architect. FedRAMP automation, Azure Landing Zones, AKS, Platform One, DoD IL4/IL5. Automation-first. Code-first.`,
+    headline: <>Principal Cloud & DevSecOps Architect</>,
+    subline: <>Where principal engineers come to automate commercial and government cloud.<br/>Building <InlineCode>Civedra</InlineCode>, <InlineCode>Amakili</InlineCode>, and <InlineCode>Kelly Research</InlineCode>.</>
 }
 
 const about = {
@@ -258,10 +256,8 @@ const about = {
 
 const blog = {
     label: 'Blog',
-    title: 'Writing about cloud, AI and security...',
-    description: `Read what ${person.name} has been up to recently`
-    // Create new blog posts by adding a new .mdx file to app/blog/posts
-    // All posts will be listed on the /blog route
+    title: 'Technical Blog — GovCloud Automation & DevSecOps',
+    description: `Principal-level technical writing on FedRAMP automation, Azure GCC High, AKS hardening, Platform One, Bicep IaC, NIST 800-53, and DoD cloud architecture. Code included.`
 }
 
 const work = {

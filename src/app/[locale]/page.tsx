@@ -14,11 +14,9 @@ import './page.css'; // Importing CSS for the grid styling
 export async function generateMetadata(
     { params: { locale } }: { params: { locale: string } }
 ) {
-    const t = await getTranslations();
-    const { home } = renderContent(t);
-    const title = home.title;
-    const description = home.description;
-    const ogImage = `https://${baseURL}/og?title=${encodeURIComponent(title)}`;
+    const title = 'Franck Kengne | Principal Cloud & DevSecOps Architect';
+    const description = 'Principal Cloud & DevSecOps Architect. FedRAMP automation, Azure Landing Zones, AKS, Platform One, DoD IL4/IL5. Automation-first. Code-first.';
+    const ogImage = `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
 
     return {
         title,
@@ -27,19 +25,17 @@ export async function generateMetadata(
             title,
             description,
             type: 'website',
-            url: `https://${baseURL}/${locale}`,
-            images: [
-                {
-                    url: ogImage,
-                    alt: title,
-                },
-            ],
+            url: 'https://www.cloudcraftwithfranck.org',
+            images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
         },
         twitter: {
             card: 'summary_large_image',
             title,
             description,
             images: [ogImage],
+        },
+        alternates: {
+            canonical: 'https://www.cloudcraftwithfranck.org',
         },
     };
 }
@@ -89,25 +85,29 @@ export default function Home(
                     __html: JSON.stringify({
                         '@context': 'https://schema.org',
                         '@type': 'Person',
-                        name: person.name,
-                        url: `https://${baseURL}`,
-                        image: `https://${baseURL}${person.avatar}`,
-                        jobTitle: person.role,
-                        description: home.description,
+                        name: 'Franck Kengne',
+                        url: 'https://www.cloudcraftwithfranck.org',
+                        image: 'https://www.cloudcraftwithfranck.org/images/avatar.jpg',
+                        jobTitle: 'Principal Cloud & DevSecOps Architect',
+                        description: 'Principal Cloud & DevSecOps Architect specializing in Azure Landing Zones, FedRAMP compliance automation, AKS, Platform One, and DoD government cloud infrastructure.',
+                        knowsAbout: [
+                            'Azure Landing Zones', 'FedRAMP', 'NIST 800-53', 'AKS',
+                            'Platform One', 'Big Bang', 'Chainguard', 'Iron Bank',
+                            'DevSecOps', 'Government Cloud', 'Bicep IaC', 'OSCAL',
+                            'Policy as Code', 'DoD IL4', 'Azure GCC High', 'Compliance Automation',
+                        ],
                         sameAs: [
                             'https://github.com/cloudcwfranck',
                             'https://www.linkedin.com/in/franck-kengne-cloud-advocate-0822a6233/',
                             'https://x.com/cloudcwfranck',
+                            'https://civedra.com',
+                            'https://amakili.com',
+                            'https://kellyresearch.org',
                         ],
-                        knowsAbout: [
-                            'Azure Cloud Engineering',
-                            'FedRAMP',
-                            'NIST 800-53',
-                            'Kubernetes',
-                            'DevSecOps',
-                            'Infrastructure as Code',
-                            'Azure Kubernetes Service',
-                            'Cloud Security',
+                        founder: [
+                            { '@type': 'Organization', name: 'Civedra', url: 'https://civedra.com', description: 'AI Integrity & Trust Intelligence Platform' },
+                            { '@type': 'Organization', name: 'Amakili', url: 'https://amakili.com', description: 'AI infrastructure for African communities' },
+                            { '@type': 'Organization', name: 'Kelly Research', url: 'https://kellyresearch.org', description: 'Research Intelligence Platform' },
                         ],
                     }),
                 }}

@@ -1,0 +1,175 @@
+---
+title: "FedRAMP ATO Automation with Azure Policy and Bicep"
+description: "End-to-end runbook for automating FedRAMP High ATO evidence collection, NIST 800-53 control mapping, and continuous compliance reporting on Azure GovCloud."
+tags: ["FedRAMP", "Azure", "Bicep", "NIST 800-53", "DevSecOps"]
+difficulty: "advanced"
+estimatedTime: "45 minutes"
+publishedAt: "2025-04-01"
+summary: "End-to-end runbook for automating FedRAMP High ATO evidence collection, NIST 800-53 control mapping, and continuous compliance reporting on Azure GovCloud."
+images: []
+---
+
+## Overview
+
+This runbook automates the evidence collection pipeline for a FedRAMP High Authorization to Operate (ATO). The goal is to replace manual screenshot-driven SSP evidence with machine-generated, timestamped compliance artifacts stored in Azure Blob Storage.
+
+**Prerequisites**
+- Azure GovCloud subscription with Owner or Contributor access
+- Azure CLI >= 2.55 authenticated to `AzureUSGovernment` cloud
+- Bicep CLI >= 0.25
+- `az bicep install` completed
+
+---
+
+## Step 1: Deploy the Compliance Landing Zone
+
+```bash
+# Set target environment
+export SUBSCRIPTION_ID="<your-govcloud-subscription-id>"
+export RESOURCE_GROUP="rg-fedramp-compliance"
+export LOCATION="usgovvirginia"
+
+# Authenticate to Azure Government
+az cloud set --name AzureUSGovernment
+az login --tenant "<your-tenant-id>"
+az account set --subscription "$SUBSCRIPTION_ID"
+
+# Create resource group
+az group create \
+  --name "$RESOURCE_GROUP" \
+  --location "$LOCATION" \
+  --tags environment=compliance classification=fedramp-high
+```
+
+## Step 2: Deploy NIST 800-53 Policy Initiative
+
+```bicep
+// compliance-policies.bicep
+targetScope = 'subscription'
+
+param location string = 'usgovvirginia'
+
+// Assign built-in NIST 800-53 Rev 5 initiative
+resource nistAssignment 'Microsoft.Authorization/policyAssignments@2022-06-01' = {
+  name: 'nist-800-53-r5-assignment'
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    policyDefinitionId: '/providers/Microsoft.Authorization/policySetDefinitions/179d1daa-458f-4e47-8086-2a68d0d6c38f'
+    displayName: 'NIST SP 800-53 Rev. 5'
+    enforcementMode: 'Default'
+    parameters: {
+      logAnalyticsWorkspaceIdForVMs: {
+        value: '/subscriptions/${subscription().subscriptionId}/resourceGroups/rg-monitoring/providers/Microsoft.OperationalInsights/workspaces/law-compliance'
+      }
+    }
+  }
+}
+
+output assignmentId string = nistAssignment.id
+```
+
+```bash
+# Deploy the policy initiative
+az deployment sub create \
+  --name "nist-80053-r5-$(date +%Y%m%d)" \
+  --location "$LOCATION" \
+  --template-file compliance-policies.bicep \
+  --parameters location="$LOCATION"
+```
+
+## Step 3: Collect Compliance Evidence
+
+```bash
+#!/bin/bash
+# evidence-collector.sh — runs nightly via Azure Automation
+
+set -euo pipefail
+
+STORAGE_ACCOUNT="stcomplianceevidence"
+CONTAINER="ato-artifacts"
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+echo "[$TIMESTAMP] Starting FedRAMP evidence collection..."
+
+# Collect policy compliance state
+az policy state summarize \
+  --subscription "$SUBSCRIPTION_ID" \
+  --query "results.policySetSummary[?policySetDefinitionId contains 'nist']" \
+  --output json > /tmp/nist-compliance-$(date +%Y%m%d).json
+
+# Upload to evidence store with immutability
+az storage blob upload \
+  --account-name "$STORAGE_ACCOUNT" \
+  --container-name "$CONTAINER" \
+  --name "nist/$(date +%Y/%m/%d)/compliance-state.json" \
+  --file "/tmp/nist-compliance-$(date +%Y%m%d).json" \
+  --auth-mode login \
+  --overwrite false
+
+echo "[$TIMESTAMP] Evidence uploaded. ATO artifact immutability enforced."
+```
+
+## Step 4: Validate Control Coverage
+
+Run this query in Azure Resource Graph to identify gaps in your control coverage:
+
+```kusto
+PolicyResources
+| where type == "microsoft.policyinsights/policystates"
+| where properties.policySetDefinitionId contains "nist"
+| summarize
+    Total = count(),
+    NonCompliant = countif(properties.complianceState == "NonCompliant"),
+    Compliant = countif(properties.complianceState == "Compliant")
+    by properties.policyDefinitionId
+| extend CompliancePercent = round(todouble(Compliant) / todouble(Total) * 100, 2)
+| where CompliancePercent < 100
+| order by CompliancePercent asc
+```
+
+## Step 5: Automate Continuous Reporting
+
+Deploy an Azure Automation runbook on a daily schedule to email the compliance report:
+
+```bash
+az automation runbook create \
+  --automation-account-name "aa-compliance" \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "DailyComplianceReport" \
+  --type PowerShell \
+  --log-verbose true \
+  --log-progress true
+
+# Link to daily schedule (runs at 06:00 UTC)
+az automation schedule create \
+  --automation-account-name "aa-compliance" \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "DailyAt0600UTC" \
+  --frequency Day \
+  --interval 1 \
+  --start-time "$(date -u +%Y-%m-%dT06:00:00Z --date='tomorrow')"
+```
+
+---
+
+## Verification
+
+After deployment, verify your ATO pipeline is functioning:
+
+1. Check policy compliance state in the Azure Portal → Policy → Compliance
+2. Confirm evidence blobs are appearing in `stcomplianceevidence/ato-artifacts/nist/`
+3. Verify the immutability policy is active: `az storage container immutability-policy show`
+4. Review the Resource Graph query results — target 95%+ compliance before submitting ATO package
+
+---
+
+## Related Controls
+
+This runbook addresses the following NIST 800-53 Rev 5 control families:
+- **AU (Audit and Accountability)**: Automated log collection and tamper-evident storage
+- **CA (Assessment, Authorization, Monitoring)**: Continuous monitoring pipeline
+- **CM (Configuration Management)**: Policy-as-code enforcement via Azure Policy
+- **SI (System and Information Integrity)**: Real-time drift detection

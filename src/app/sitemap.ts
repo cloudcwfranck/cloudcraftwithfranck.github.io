@@ -29,5 +29,16 @@ export default async function sitemap() {
         }))
     );
 
-    return [...routes, ...blogs, ...works]
+    let runbooks: { url: string; lastModified: string }[] = [];
+    try {
+        const runbookPosts = getPosts(['src', 'content', 'runbooks']);
+        runbooks = runbookPosts.map((post) => ({
+            url: `${baseURL}/runbooks/${post.slug}`,
+            lastModified: post.metadata.publishedAt,
+        }));
+    } catch {
+        runbooks = [];
+    }
+
+    return [...routes, ...blogs, ...works, ...runbooks]
 }

@@ -56,7 +56,7 @@ async function getAIInsight(topPages: { url: string; count: number }[], subscrib
     ].filter(Boolean).join('\n');
 
     const message = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 300,
       messages: [{
         role: 'user',

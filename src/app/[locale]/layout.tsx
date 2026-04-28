@@ -27,27 +27,36 @@ export async function generateMetadata(
 	const { person, home } = renderContent(t);
 
 	return {
-		metadataBase: new URL(`https://${baseURL}`),
+		metadataBase: new URL('https://www.cloudcraftwithfranck.org'),
 		title: {
-			default: home.title,
-			template: `%s | ${person.name}`,
+			default: 'Franck Kengne | Principal Cloud & DevSecOps Architect',
+			template: '%s | Franck Kengne',
 		},
-		description: home.description,
-		authors: [{ name: person.name, url: `https://${baseURL}/about` }],
-		creator: person.name,
+		description: 'Principal Cloud & DevSecOps Architect specializing in Azure Landing Zones, FedRAMP compliance automation, AKS, Platform One, and DoD government cloud infrastructure. Real code. Real automation.',
+		keywords: [
+			'Principal Cloud Architect', 'Azure Landing Zones', 'FedRAMP automation',
+			'NIST 800-53', 'DevSecOps', 'AKS hardening', 'Platform One', 'Big Bang',
+			'Chainguard', 'Iron Bank', 'DoD IL4', 'Azure GCC High', 'Bicep IaC',
+			'OSCAL', 'Policy as Code', 'government cloud', 'compliance automation',
+		],
+		authors: [{ name: 'Franck Kengne', url: 'https://www.cloudcraftwithfranck.org' }],
+		creator: 'Franck Kengne',
 		openGraph: {
-			title: `${person.name} — Cloud Advocate & Instructor`,
-			description: home.description,
-			url: `https://${baseURL}`,
-			siteName: 'CloudCraftWithFranck',
-			locale: 'en_US',
 			type: 'website',
-			images: [{ url: `https://${baseURL}/og?title=${encodeURIComponent(home.title)}` }],
+			locale: 'en_US',
+			url: 'https://www.cloudcraftwithfranck.org',
+			siteName: 'CloudCraft with Franck',
+			title: 'Franck Kengne | Principal Cloud & DevSecOps Architect',
+			description: 'Principal Cloud Architect. FedRAMP automation, Azure GCC High, AKS, Platform One, DoD IL4. Real code, real runbooks.',
+			images: [{ url: '/og', width: 1200, height: 630, alt: 'Franck Kengne — Principal Cloud Architect' }],
 		},
 		twitter: {
 			card: 'summary_large_image',
 			site: '@cloudcwfranck',
 			creator: '@cloudcwfranck',
+			title: 'Franck Kengne | Principal Cloud & DevSecOps Architect',
+			description: 'Principal Cloud Architect. FedRAMP automation, Azure GCC High, AKS, Platform One, DoD IL4.',
+			images: ['/og'],
 		},
 		robots: {
 			index: true,

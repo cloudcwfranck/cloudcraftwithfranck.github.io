@@ -36,44 +36,38 @@ export async function generateStaticParams() {
 }
 
 export function generateMetadata({ params: { slug, locale } }: BlogParams) {
-	let post = getPosts(['src', 'app', '[locale]', 'blog', 'posts', locale]).find((post) => post.slug === slug)
+	const post = getPosts(['src', 'app', '[locale]', 'blog', 'posts', locale]).find((p) => p.slug === slug);
 
-	if (!post) {
-		return
-	}
+	if (!post) return { title: 'Post Not Found' };
 
-	let {
-		title,
-		publishedAt: publishedTime,
-		summary: description,
-		image,
-	} = post.metadata;
-	let ogImage = image
-		? `https://${baseURL}${image}`
-		: `https://${baseURL}/og?title=${title}`;
+	const { title, publishedAt: publishedTime, summary: description, image, tag } = post.metadata;
+	const ogImage = image
+		? `https://www.cloudcraftwithfranck.org${image}`
+		: `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
+	const keywords = tag ? [tag] : [];
 
 	return {
 		title,
 		description,
+		keywords,
+		authors: [{ name: 'Franck Kengne' }],
 		openGraph: {
 			title,
 			description,
 			type: 'article',
 			publishedTime,
-			url: `https://${baseURL}/${locale}/blog/${post.slug}`,
-			images: [
-				{
-					url: ogImage,
-				},
-			],
+			authors: ['Franck Kengne'],
+			url: `https://www.cloudcraftwithfranck.org/blog/${slug}`,
+			images: [{ url: ogImage, width: 1200, height: 630 }],
 		},
-			twitter: {
+		twitter: {
 			card: 'summary_large_image',
 			title,
 			description,
 			images: [ogImage],
 		},
-	}
+		alternates: { canonical: `https://www.cloudcraftwithfranck.org/blog/${slug}` },
+	};
 }
 
 export default function Blog({ params }: BlogParams) {
@@ -103,20 +97,21 @@ export default function Blog({ params }: BlogParams) {
 						datePublished: post.metadata.publishedAt,
 						dateModified: post.metadata.publishedAt,
 						description: post.metadata.summary,
-						keywords: post.metadata.tag ? [post.metadata.tag] : [],
+						keywords: post.metadata.tag ? post.metadata.tag : '',
 						image: post.metadata.image
-							? `https://${baseURL}${post.metadata.image}`
-							: `https://${baseURL}/og?title=${encodeURIComponent(post.metadata.title)}`,
-						url: `https://${baseURL}/${params.locale}/blog/${post.slug}`,
+							? `https://www.cloudcraftwithfranck.org${post.metadata.image}`
+							: `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(post.metadata.title)}`,
+						url: `https://www.cloudcraftwithfranck.org/blog/${post.slug}`,
 						author: {
 							'@type': 'Person',
-							name: person.name,
-							url: `https://${baseURL}/about`,
+							name: 'Franck Kengne',
+							url: 'https://www.cloudcraftwithfranck.org',
+							jobTitle: 'Principal Cloud & DevSecOps Architect',
 						},
 						publisher: {
 							'@type': 'Person',
-							name: person.name,
-							url: `https://${baseURL}`,
+							name: 'Franck Kengne',
+							url: 'https://www.cloudcraftwithfranck.org',
 						},
 					}),
 				}}

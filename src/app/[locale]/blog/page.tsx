@@ -8,28 +8,20 @@ import { useTranslations } from 'next-intl';
 export async function generateMetadata(
 	{params: {locale}}: { params: { locale: string }}
 ) {
-
-	const t = await getTranslations();
-	const { blog } = renderContent(t);
-
-	const title = blog.title;
-	const description = blog.description;
-	const ogImage = `https://${baseURL}/og?title=${encodeURIComponent(title)}`;
+	const title = 'Technical Blog — GovCloud Automation & DevSecOps';
+	const description = 'Principal-level technical writing on FedRAMP automation, Azure GCC High, AKS hardening, Platform One, Bicep IaC, NIST 800-53, and DoD cloud architecture. Code included.';
+	const ogImage = `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
 
 	return {
 		title,
 		description,
+		keywords: ['FedRAMP automation', 'Azure GCC High', 'AKS hardening', 'Platform One', 'Bicep IaC', 'NIST 800-53', 'DevSecOps', 'DoD cloud'],
 		openGraph: {
 			title,
 			description,
 			type: 'website',
-			url: `https://${baseURL}/${locale}/blog`,
-			images: [
-				{
-					url: ogImage,
-					alt: title,
-				},
-			],
+			url: 'https://www.cloudcraftwithfranck.org/blog',
+			images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
 		},
 		twitter: {
 			card: 'summary_large_image',
@@ -37,6 +29,7 @@ export async function generateMetadata(
 			description,
 			images: [ogImage],
 		},
+		alternates: { canonical: 'https://www.cloudcraftwithfranck.org/blog' },
 	};
 }
 

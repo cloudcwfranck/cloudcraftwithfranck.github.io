@@ -8,11 +8,9 @@ import { useTranslations } from 'next-intl';
 export async function generateMetadata(
     {params: {locale}}: { params: { locale: string }}
 ) {
-    const t = await getTranslations();
-    const {person, about, social } = renderContent(t);
-	const title = about.title;
-	const description = about.description;
-	const ogImage = `https://${baseURL}/og?title=${encodeURIComponent(title)}`;
+	const title = 'About — Franck Kengne';
+	const description = 'Principal Cloud Architect and entrepreneur. Deep expertise in government cloud, FedRAMP ATO automation, DevSecOps pipelines. Building Civedra and Amakili.';
+	const ogImage = `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
 
 	return {
 		title,
@@ -20,14 +18,9 @@ export async function generateMetadata(
 		openGraph: {
 			title,
 			description,
-			type: 'website',
-			url: `https://${baseURL}/${locale}/about`,
-			images: [
-				{
-					url: ogImage,
-					alt: title,
-				},
-			],
+			type: 'profile',
+			url: 'https://www.cloudcraftwithfranck.org/about',
+			images: [{ url: ogImage, width: 1200, height: 630, alt: title }],
 		},
 		twitter: {
 			card: 'summary_large_image',
@@ -35,6 +28,7 @@ export async function generateMetadata(
 			description,
 			images: [ogImage],
 		},
+		alternates: { canonical: 'https://www.cloudcraftwithfranck.org/about' },
 	};
 }
 

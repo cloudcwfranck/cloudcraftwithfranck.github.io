@@ -35,40 +35,29 @@ export async function generateStaticParams(): Promise<{ slug: string; locale: st
 }
 
 export function generateMetadata({ params: { slug, locale } }: WorkParams) {
-	let post = getPosts(['src', 'app', '[locale]', 'work', 'projects', locale]).find((post) => post.slug === slug)
-	
-	if (!post) {
-		return
-	}
+	const post = getPosts(['src', 'app', '[locale]', 'work', 'projects', locale]).find((p) => p.slug === slug);
 
-	let {
-		title,
-		publishedAt: publishedTime,
-		summary: description,
-		images,
-		image,
-		team,
-	} = post.metadata
-	let ogImage = image
-		? `https://${baseURL}${image}`
-		: `https://${baseURL}/og?title=${title}`;
+	if (!post) return { title: 'Project Not Found' };
+
+	const { title, publishedAt: publishedTime, summary: description, images, image } = post.metadata;
+	const ogImage = image
+		? `https://www.cloudcraftwithfranck.org${image}`
+		: images?.[0]
+			? `https://www.cloudcraftwithfranck.org${images[0]}`
+			: `https://www.cloudcraftwithfranck.org/og?title=${encodeURIComponent(title)}`;
 
 	return {
 		title,
 		description,
-		images,
-		team,
+		authors: [{ name: 'Franck Kengne' }],
 		openGraph: {
 			title,
 			description,
 			type: 'article',
 			publishedTime,
-			url: `https://${baseURL}/${locale}/work/${post.slug}`,
-			images: [
-				{
-					url: ogImage,
-				},
-			],
+			authors: ['Franck Kengne'],
+			url: `https://www.cloudcraftwithfranck.org/work/${slug}`,
+			images: [{ url: ogImage, width: 1200, height: 630 }],
 		},
 		twitter: {
 			card: 'summary_large_image',
@@ -76,7 +65,8 @@ export function generateMetadata({ params: { slug, locale } }: WorkParams) {
 			description,
 			images: [ogImage],
 		},
-	}
+		alternates: { canonical: `https://www.cloudcraftwithfranck.org/work/${slug}` },
+	};
 }
 
 export default function Project({ params }: WorkParams) {
