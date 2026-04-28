@@ -1,0 +1,268 @@
+# Autonomous Site Upgrade — Build Plan
+
+**Site:** cloudcraftwithfranck.org  
+**Stack:** Next.js 14 App Router · Once UI magic-portfolio template · next-intl (locale: `en` only, prefix: as-needed) · Vercel  
+**Branch:** `claude/upgrade-nextjs-site-onr8I` → PR → merge to `main`
+
+---
+
+## Current State (read from repo)
+
+| Area | Finding |
+|---|---|
+| `package.json` | Contains deprecated `"export": "next export"` script |
+| `src/app/robots.ts` | Exists but returns no `https://` prefix on `sitemap` URL |
+| `src/app/sitemap.ts` | Exists, dynamic, Next.js 14 native — **good** |
+| `generateMetadata()` | Present on `/`, `/about`, `/blog/[slug]`, `/work/[slug]` — layout also has it |
+| JSON-LD | `WebPage` on home, `Person` on about, `BlogPosting` on blog + work |
+| i18n | `i18n = false` in config; single locale `en`; `localePrefix: 'as-needed'` means no `/en` prefix |
+| Newsletter | `Mailchimp.tsx` wired to Mailchimp form POST — still pointing at placeholder URL |
+| Contact page | Does **not** exist |
+| Scripts dir | Does **not** exist |
+| GitHub Actions | Does **not** exist |
+| `.env.example` | Does **not** exist |
+| Analytics | None installed |
+| Dashboard | Does **not** exist |
+
+---
+
+## MDX Frontmatter Schema (from existing posts)
+
+```yaml
+---
+title: "…"
+publishedAt: "YYYY-MM-DD"
+summary: "…"
+tag: "…"           # optional, single value
+images:            # optional list (work projects use this)
+  - "/images/…"
+team:              # optional (work projects only)
+  - name: "…"
+    role: "…"
+    avatar: "/images/avatar.jpg"
+    linkedIn: "…"
+---
+```
+
+Blog posts: `title`, `publishedAt`, `summary`, `tag`  
+Work projects: above + `images[]` + `team[]`
+
+---
+
+## Required Environment Variables
+
+| Variable | Used In | Where to Set |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `scripts/generate-post.ts`, `scripts/enrich-seo.ts`, dashboard, weekly-digest workflow | `.env.local` + Vercel + GitHub Secrets |
+| `RESEND_API_KEY` | `/api/subscribe`, `/api/contact`, `/api/webhook/resend`, weekly-digest | `.env.local` + Vercel + GitHub Secrets |
+| `RESEND_AUDIENCE_ID` | `/api/subscribe` | `.env.local` + Vercel + GitHub Secrets |
+| `RESEND_FROM_EMAIL` | `/api/subscribe`, `/api/contact` | `.env.local` + Vercel |
+| `SUPABASE_URL` | `/api/contact` (optional fallback: Resend logs) | `.env.local` + Vercel |
+| `SUPABASE_ANON_KEY` | `/api/contact` | `.env.local` + Vercel |
+| `POSTHOG_KEY` | `PostHogProvider`, dashboard, weekly-digest | `.env.local` + Vercel + GitHub Secrets |
+| `DASHBOARD_PASSWORD` | `src/middleware.ts` (dashboard route guard) | `.env.local` + Vercel |
+| `NEXT_PUBLIC_SITE_URL` | `sitemap.ts`, structured data | `.env.local` + Vercel |
+
+---
+
+## Phase 0 — Already Done
+
+- [x] Git identity set: `cloudcwfranck` / `yakengne@gmail.com`
+- [x] Full file tree read
+- [x] This plan written
+
+**Commit:** `docs: add autonomous build plan`
+
+---
+
+## Phase 1 — Git Hygiene & SEO Foundation
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `package.json` | Remove `"export": "next export"` script |
+| `src/app/robots.ts` | Fix sitemap URL to use `https://` and `NEXT_PUBLIC_SITE_URL` |
+| `src/app/resources/config.js` | Update `baseURL` to `cloudcraftwithfranck.org` |
+| `src/app/[locale]/layout.tsx` | Strengthen root-level `generateMetadata` (add canonical, keywords, author) |
+| `src/app/[locale]/page.tsx` | Upgrade JSON-LD from `WebPage` → full `Person` schema on home |
+| `src/app/[locale]/blog/[slug]/page.tsx` | Upgrade JSON-LD from `BlogPosting` → `TechArticle` with `keywords` field |
+| `src/app/[locale]/work/[slug]/page.tsx` | Upgrade JSON-LD from `BlogPosting` → `SoftwareApplication` schema |
+| `src/app/[locale]/gallery/page.tsx` | Add `generateMetadata()` |
+| `src/app/[locale]/blog/page.tsx` | Add `generateMetadata()` |
+| `src/app/[locale]/work/page.tsx` | Add `generateMetadata()` |
+
+### Notes
+- `sitemap.ts` and `robots.ts` already exist as Next.js 14 native route handlers — just fix/enhance.
+- `baseURL` in `config.js` is currently `demo.magic-portfolio.com` — update to `cloudcraftwithfranck.org`.
+- RSC audit: `page.tsx` (home) uses `useTranslations` so it must be a Client Component — that's expected. Components like `Posts`, `Projects` are already server-compatible. No unnecessary `'use client'` found in page bodies.
+
+**Commit:** `feat: seo foundation — metadata, sitemap, robots, json-ld`
+
+---
+
+## Phase 2 — Autonomous Content Pipeline
+
+### Files to Create
+
+| File | Purpose |
+|---|---|
+| `scripts/generate-post.ts` | CLI: picks topic from queue → calls Claude API → writes MDX to `blog/posts/en/` → triggers enrich-seo |
+| `scripts/topic-queue.json` | 20 high-value GovCloud/FedRAMP/AKS/DevSecOps topic slugs |
+| `scripts/tsconfig.json` | TypeScript config for scripts (separate from app, targets Node) |
+| `.github/workflows/auto-publish.yml` | Cron every Monday 9am UTC: pull topic → generate → commit → push |
+
+### Frontmatter generated by Claude must match:
+```
+title, publishedAt, summary, tag
+```
+
+### GitHub Actions Requirements
+- Runs on `ubuntu-latest`
+- Uses `ANTHROPIC_API_KEY` from GitHub Secrets (never hardcoded)
+- Commits as `cloudcwfranck` with email `yakengne@gmail.com`
+- Pushes to `main`
+
+**Commit:** `feat: content pipeline — blog generation and github actions`
+
+---
+
+## Phase 3 — AI SEO Enrichment Engine
+
+### Files to Create
+
+| File | Purpose |
+|---|---|
+| `scripts/enrich-seo.ts` | Reads all MDX blog posts → calls Claude API → writes enriched frontmatter fields back |
+| `src/app/api/seo-preview/route.ts` | GET `?slug=…` → returns enriched metadata JSON |
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `package.json` | Add `"prebuild": "npx ts-node --project scripts/tsconfig.json scripts/enrich-seo.ts"` |
+
+### Enriched Frontmatter Fields Added
+```yaml
+metaDescription: "…"   # ≤155 chars
+keywords: ["…", "…"]   # 5 semantic variants
+internalLinks: ["…"]   # 2 related post slugs
+twitterThread: ["…"]   # 5 tweets
+tldr: "…"              # 2 sentences
+```
+
+**Commit:** `feat: seo enrichment — prebuild hook and metadata generation`
+
+---
+
+## Phase 4 — Email Capture & Forms
+
+### Files to Create
+
+| File | Purpose |
+|---|---|
+| `src/app/api/subscribe/route.ts` | POST: validate email, add to Resend Audience, send welcome email |
+| `src/app/api/contact/route.ts` | POST: validate + store + notify owner + auto-reply |
+| `src/app/api/webhook/resend/route.ts` | Handle Resend delivery/bounce/complaint webhooks |
+| `emails/welcome.tsx` | React Email template for welcome email |
+| `emails/contact-notification.tsx` | React Email template for owner notification |
+| `emails/contact-reply.tsx` | React Email template for submitter auto-reply |
+| `src/app/[locale]/contact/page.tsx` | Contact page using Once UI components |
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `src/components/Mailchimp.tsx` | Rewire form submission to `/api/subscribe` instead of Mailchimp |
+| `package.json` | Add `react-email`, `@react-email/components`, `resend` dependencies |
+
+### Security
+- Honeypot field on both forms (hidden `website` field — reject if filled)
+- Server-side email regex + length validation
+- Rate limiting: 1 submit per IP per hour via in-memory `Map` (dev) / Vercel KV env var check
+
+**Commit:** `feat: email capture and contact forms — resend apis`
+
+---
+
+## Phase 5 — Analytics & Intelligence Dashboard
+
+### Files to Create
+
+| File | Purpose |
+|---|---|
+| `src/lib/posthog.ts` | PostHog client singleton |
+| `src/components/PostHogProvider.tsx` | `'use client'` wrapper for root layout |
+| `src/app/[locale]/dashboard/page.tsx` | Password-protected intelligence dashboard |
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `src/app/[locale]/layout.tsx` | Add `<Analytics />`, `<SpeedInsights />`, `<PostHogProvider>` |
+| `src/middleware.ts` | Add `/dashboard` route protection: check `DASHBOARD_PASSWORD` cookie |
+| `package.json` | Add `@vercel/analytics`, `@vercel/speed-insights`, `posthog-js` |
+
+### Dashboard Features (server-rendered, password-protected)
+- Top pages this week (PostHog REST API)
+- Newsletter subscriber count (Resend API)
+- Contact form submissions (Resend or Supabase)
+- AI weekly insight (Claude API call with traffic data)
+- Recent blog posts with SEO score summary
+
+**Commit:** `feat: analytics — vercel analytics, posthog, intelligence dashboard`
+
+---
+
+## Phase 6 — Automated Weekly Digest
+
+### Files to Create
+
+| File | Purpose |
+|---|---|
+| `.github/workflows/weekly-digest.yml` | Cron Sat 8am: fetch stats → Claude narrative → Resend broadcast |
+| `emails/weekly-digest.tsx` | React Email template for weekly digest |
+
+**Commit:** `feat: weekly digest — posthog stats, narrative, resend broadcast`
+
+---
+
+## Phase 0 Deliverable (Before Any Phase Executes)
+
+Create `.env.example`:
+```
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+RESEND_API_KEY=your_resend_api_key_here
+RESEND_AUDIENCE_ID=your_resend_audience_id_here
+RESEND_FROM_EMAIL=hello@cloudcraftwithfranck.org
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key_here
+POSTHOG_KEY=phc_your_posthog_key_here
+DASHBOARD_PASSWORD=your_dashboard_password_here
+NEXT_PUBLIC_SITE_URL=https://cloudcraftwithfranck.org
+```
+
+---
+
+## Commit Summary
+
+| # | Commit message | Branch |
+|---|---|---|
+| 1 | `docs: add autonomous build plan` | `claude/upgrade-nextjs-site-onr8I` |
+| 2 | `feat: seo foundation — metadata, sitemap, robots, json-ld` | same |
+| 3 | `feat: content pipeline — blog generation and github actions` | same |
+| 4 | `feat: seo enrichment — prebuild hook and metadata generation` | same |
+| 5 | `feat: email capture and contact forms — resend apis` | same |
+| 6 | `feat: analytics — vercel analytics, posthog, intelligence dashboard` | same |
+| 7 | `feat: weekly digest — posthog stats, narrative, resend broadcast` | same |
+
+---
+
+## Execution Rules (Non-Negotiable)
+
+1. Every commit author: `cloudcwfranck` — verified via `git log` after each commit
+2. Run `npm run build` and confirm it passes before committing any phase
+3. Never hardcode API keys — all from env vars
+4. Never delete existing pages or components without replacing them in the same commit
+5. Never mention Claude, AI, or "automated" in commit messages
+6. Preserve next-intl routing (`localePrefix: 'as-needed'`, default locale `en`)
