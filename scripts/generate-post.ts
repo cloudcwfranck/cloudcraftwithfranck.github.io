@@ -92,7 +92,7 @@ Cover:
 Make it immediately actionable for a senior cloud engineer working in a DoD or federal civilian environment.`;
 
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 4096,
     messages: [{ role: 'user', content: userPrompt }],
     system: systemPrompt,
