@@ -98,18 +98,25 @@ export default function Blog({ params }: BlogParams) {
 				dangerouslySetInnerHTML={{
 					__html: JSON.stringify({
 						'@context': 'https://schema.org',
-						'@type': 'BlogPosting',
+						'@type': 'TechArticle',
 						headline: post.metadata.title,
 						datePublished: post.metadata.publishedAt,
 						dateModified: post.metadata.publishedAt,
 						description: post.metadata.summary,
+						keywords: post.metadata.tag ? [post.metadata.tag] : [],
 						image: post.metadata.image
 							? `https://${baseURL}${post.metadata.image}`
-							: `https://${baseURL}/og?title=${post.metadata.title}`,
-							url: `https://${baseURL}/${params.locale}/blog/${post.slug}`,
+							: `https://${baseURL}/og?title=${encodeURIComponent(post.metadata.title)}`,
+						url: `https://${baseURL}/${params.locale}/blog/${post.slug}`,
 						author: {
 							'@type': 'Person',
 							name: person.name,
+							url: `https://${baseURL}/about`,
+						},
+						publisher: {
+							'@type': 'Person',
+							name: person.name,
+							url: `https://${baseURL}`,
 						},
 					}),
 				}}

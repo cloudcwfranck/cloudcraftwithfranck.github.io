@@ -105,19 +105,20 @@ export default function Project({ params }: WorkParams) {
 				dangerouslySetInnerHTML={{
 					__html: JSON.stringify({
 						'@context': 'https://schema.org',
-						'@type': 'BlogPosting',
-						headline: post.metadata.title,
+						'@type': 'SoftwareApplication',
+						name: post.metadata.title,
 						datePublished: post.metadata.publishedAt,
-						dateModified: post.metadata.publishedAt,
 						description: post.metadata.summary,
-						image: post.metadata.image
-							? `https://${baseURL}${post.metadata.image}`
-							: `https://${baseURL}/og?title=${post.metadata.title}`,
-							url: `https://${baseURL}/${params.locale}/work/${post.slug}`,
+						image: post.metadata.images?.[0]
+							? `https://${baseURL}${post.metadata.images[0]}`
+							: `https://${baseURL}/og?title=${encodeURIComponent(post.metadata.title)}`,
+						url: `https://${baseURL}/${params.locale}/work/${post.slug}`,
 						author: {
 							'@type': 'Person',
 							name: person.name,
+							url: `https://${baseURL}/about`,
 						},
+						applicationCategory: 'CloudApplication',
 					}),
 				}}
 			/>

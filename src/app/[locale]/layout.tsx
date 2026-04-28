@@ -24,16 +24,27 @@ export async function generateMetadata(
 	const { person, home } = renderContent(t);
 
 	return {
-		metadataBase: new URL(`https://${baseURL}/${locale}`),
-		title: home.title,
+		metadataBase: new URL(`https://${baseURL}`),
+		title: {
+			default: home.title,
+			template: `%s | ${person.name}`,
+		},
 		description: home.description,
+		authors: [{ name: person.name, url: `https://${baseURL}/about` }],
+		creator: person.name,
 		openGraph: {
-			title: `${person.firstName}'s Portfolio`,
-			description: 'Portfolio website showcasing my work.',
-			url: baseURL,
-			siteName: `${person.firstName}'s Portfolio`,
+			title: `${person.name} — Cloud Advocate & Instructor`,
+			description: home.description,
+			url: `https://${baseURL}`,
+			siteName: 'CloudCraftWithFranck',
 			locale: 'en_US',
 			type: 'website',
+			images: [{ url: `https://${baseURL}/og?title=${encodeURIComponent(home.title)}` }],
+		},
+		twitter: {
+			card: 'summary_large_image',
+			site: '@cloudcwfranck',
+			creator: '@cloudcwfranck',
 		},
 		robots: {
 			index: true,

@@ -88,19 +88,27 @@ export default function Home(
                 dangerouslySetInnerHTML={{
                     __html: JSON.stringify({
                         '@context': 'https://schema.org',
-                        '@type': 'WebPage',
-                        name: home.title,
-                        description: home.description,
+                        '@type': 'Person',
+                        name: person.name,
                         url: `https://${baseURL}`,
-                        image: `${baseURL}/og?title=${encodeURIComponent(home.title)}`,
-                        publisher: {
-                            '@type': 'Person',
-                            name: person.name,
-                            image: {
-                                '@type': 'ImageObject',
-                                url: `${baseURL}${person.avatar}`,
-                            },
-                        },
+                        image: `https://${baseURL}${person.avatar}`,
+                        jobTitle: person.role,
+                        description: home.description,
+                        sameAs: [
+                            'https://github.com/cloudcwfranck',
+                            'https://www.linkedin.com/in/franck-kengne-cloud-advocate-0822a6233/',
+                            'https://x.com/cloudcwfranck',
+                        ],
+                        knowsAbout: [
+                            'Azure Cloud Engineering',
+                            'FedRAMP',
+                            'NIST 800-53',
+                            'Kubernetes',
+                            'DevSecOps',
+                            'Infrastructure as Code',
+                            'Azure Kubernetes Service',
+                            'Cloud Security',
+                        ],
                     }),
                 }}
             />
