@@ -12,22 +12,15 @@ type Certification = {
     issued_at: string;
 };
 
-const LEVEL_ORDER = ['bronze', 'silver', 'gold', 'platinum'];
-
 export const metadata = {
     title: 'My Certifications — CloudCert Academy',
 };
 
-export default async function CertificationsPage({
-    params,
-}: {
-    params: Promise<{ locale: string }>;
-}) {
-    const { locale } = await params;
+export default async function CertificationsPage() {
     const supabase = await createClient();
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) redirect(`/${locale}/academy`);
+    if (!user) redirect('/academy');
 
     const [{ data: profile }, { data: certs }] = await Promise.all([
         supabase.from('profiles').select('total_xp, cert_level, full_name, email').eq('id', user.id).single(),
@@ -47,7 +40,7 @@ export default async function CertificationsPage({
 
     return (
         <Flex fillWidth maxWidth="l" direction="column" gap="40" paddingX="l" paddingY="xl">
-            <Button variant="tertiary" size="s" label="← Back to Academy" href={`/${locale}/academy`} />
+            <Button variant="tertiary" size="s" label="← Back to Academy" href="/academy" />
 
             <Flex direction="column" gap="8">
                 <Heading variant="display-strong-l">My Certifications</Heading>
@@ -115,7 +108,7 @@ export default async function CertificationsPage({
                             Complete assignments to earn XP and unlock Bronze (150 XP), Silver (450 XP),
                             Gold (900 XP), and Platinum (1500 XP) certifications.
                         </Text>
-                        <Button variant="primary" size="s" label="Start learning" href={`/${locale}/academy`} />
+                        <Button variant="primary" size="s" label="Start learning" href="/academy" />
                     </Flex>
                 ) : (
                     certList.map((cert) => (

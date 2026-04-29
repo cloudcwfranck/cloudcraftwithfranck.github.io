@@ -23,12 +23,7 @@ export const metadata = {
     description: 'AI-scored labs for Azure, FedRAMP, AKS, DevSecOps & SecOps',
 };
 
-export default async function AcademyPage({
-    params,
-}: {
-    params: Promise<{ locale: string }>;
-}) {
-    const { locale } = await params;
+export default async function AcademyPage() {
     const supabase = await createClient();
 
     const [{ data: tracks }, { data: assignments }] = await Promise.all([
@@ -103,7 +98,7 @@ export default async function AcademyPage({
                         variant="tertiary"
                         size="s"
                         label="View Certifications"
-                        href={`/${locale}/academy/certifications`}
+                        href="/academy/certifications"
                     />
                 </Flex>
             ) : (
@@ -119,7 +114,7 @@ export default async function AcademyPage({
                 <Heading as="h2" variant="heading-strong-l">Learning Tracks</Heading>
                 <div className={styles.trackGrid}>
                     {tracksWithStats.map((track) => (
-                        <TrackCard key={track.id} track={track} locale={locale} />
+                        <TrackCard key={track.id} track={track} />
                     ))}
                 </div>
             </Flex>

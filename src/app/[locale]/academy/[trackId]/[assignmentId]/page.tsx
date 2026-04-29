@@ -30,7 +30,7 @@ export default async function AssignmentPage({
 }: {
     params: Promise<{ locale: string; trackId: string; assignmentId: string }>;
 }) {
-    const { locale, trackId, assignmentId } = await params;
+    const { trackId, assignmentId } = await params;
     const supabase = await createClient();
 
     const [{ data: track, error: trackError }, { data: assignment, error: assignError }] =
@@ -56,7 +56,7 @@ export default async function AssignmentPage({
                     variant="tertiary"
                     size="s"
                     label={`← ${t.name}`}
-                    href={`/${locale}/academy/${trackId}`}
+                    href={`/academy/${trackId}`}
                 />
             </Flex>
 
@@ -129,7 +129,7 @@ export default async function AssignmentPage({
                             placeholder={a.placeholder}
                         />
                     ) : (
-                        <SignIn redirectTo={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/${locale}/academy/${trackId}/${assignmentId}`} />
+                        <SignIn redirectTo={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/academy/${trackId}/${assignmentId}`} />
                     )}
                 </Flex>
             </div>

@@ -31,7 +31,7 @@ export default async function TrackPage({
 }: {
     params: Promise<{ locale: string; trackId: string }>;
 }) {
-    const { locale, trackId } = await params;
+    const { trackId } = await params;
     const supabase = await createClient();
 
     const [{ data: track, error: trackError }, { data: assignments }] = await Promise.all([
@@ -75,7 +75,7 @@ export default async function TrackPage({
                 variant="tertiary"
                 size="s"
                 label="← Back to Academy"
-                href={`/${locale}/academy`}
+                href="/academy"
             />
 
             {/* Track header */}
@@ -108,7 +108,6 @@ export default async function TrackPage({
                         <AssignmentCard
                             key={assignment.id}
                             assignment={assignment}
-                            locale={locale}
                             completed={completedIds.has(assignment.id)}
                         />
                     ))

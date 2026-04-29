@@ -18,11 +18,10 @@ type Assignment = {
 
 type Props = {
     assignment: Assignment;
-    locale: string;
     completed?: boolean;
 };
 
-export default function AssignmentCard({ assignment, locale, completed }: Props) {
+export default function AssignmentCard({ assignment, completed }: Props) {
     return (
         <Flex
             direction="column"
@@ -71,7 +70,7 @@ export default function AssignmentCard({ assignment, locale, completed }: Props)
                     variant={completed ? 'tertiary' : 'primary'}
                     size="s"
                     label={completed ? 'Resubmit' : 'Start Assignment'}
-                    href={`/${locale}/academy/${assignment.track_id}/${assignment.id}`}
+                    href={`/academy/${assignment.track_id}/${assignment.id}`}
                 />
             </Flex>
         </Flex>

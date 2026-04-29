@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/i18n/routing';
 import { Flex, Text, Heading, Button } from '@/once-ui/components';
 import styles from '@/styles/academy.module.scss';
 
@@ -17,19 +17,18 @@ type Track = {
 
 type Props = {
     track: Track;
-    locale: string;
 };
 
-export default function TrackCard({ track, locale }: Props) {
+export default function TrackCard({ track }: Props) {
     const router = useRouter();
 
     return (
         <div
             className={styles.trackCard}
-            onClick={() => router.push(`/${locale}/academy/${track.id}`)}
+            onClick={() => router.push(`/academy/${track.id}`)}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => e.key === 'Enter' && router.push(`/${locale}/academy/${track.id}`)}
+            onKeyDown={(e) => e.key === 'Enter' && router.push(`/academy/${track.id}`)}
         >
             <Flex
                 direction="column"
@@ -67,7 +66,7 @@ export default function TrackCard({ track, locale }: Props) {
                     variant="secondary"
                     size="s"
                     label="Start Track"
-                    href={`/${locale}/academy/${track.id}`}
+                    href={`/academy/${track.id}`}
                     onClick={(e: React.MouseEvent) => e.stopPropagation()}
                 />
             </Flex>
