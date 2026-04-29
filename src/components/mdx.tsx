@@ -4,6 +4,7 @@ import React, { ReactNode } from 'react';
 import rehypePrettyCode from 'rehype-pretty-code';
 import rehypeSlug from 'rehype-slug';
 import rehypeAutolinkHeadings from 'rehype-autolink-headings';
+import remarkGfm from 'remark-gfm';
 
 import { SmartImage, SmartLink, Text } from '@/once-ui/components';
 import { CodeBlock } from '@/once-ui/modules';
@@ -127,6 +128,44 @@ function createParagraph({ children }: TextProps) {
     );
 };
 
+function GfmTable({ children }: { children: ReactNode }) {
+    return (
+        <div style={{ overflowX: 'auto', marginBlock: '1.5rem' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                {children}
+            </table>
+        </div>
+    );
+}
+
+function GfmTh({ children }: { children: ReactNode }) {
+    return (
+        <th style={{
+            padding: '8px 16px',
+            borderBottom: '2px solid var(--neutral-border-medium)',
+            textAlign: 'left',
+            fontWeight: 600,
+            color: 'var(--neutral-on-background-strong)',
+            whiteSpace: 'nowrap',
+        }}>
+            {children}
+        </th>
+    );
+}
+
+function GfmTd({ children }: { children: ReactNode }) {
+    return (
+        <td style={{
+            padding: '8px 16px',
+            borderBottom: '1px solid var(--neutral-border-weak)',
+            color: 'var(--neutral-on-background-medium)',
+            verticalAlign: 'top',
+        }}>
+            {children}
+        </td>
+    );
+}
+
 const components = {
     p: createParagraph as any,
     h1: createHeading(1) as any,
@@ -138,6 +177,9 @@ const components = {
     img: createImage as any,
     a: CustomLink as any,
     pre: EnhancedPre as any,
+    table: GfmTable as any,
+    th: GfmTh as any,
+    td: GfmTd as any,
     Table,
     CodeBlock,
 };
@@ -147,10 +189,11 @@ type CustomMDXProps = MDXRemoteProps & {
 };
 
 const mdxOptions = {
+    remarkPlugins: [remarkGfm],
     rehypePlugins: [
         rehypeSlug,
         [rehypeAutolinkHeadings, { behavior: 'wrap' }] as any,
-        [rehypePrettyCode, { theme: 'github-dark', keepBackground: false }] as any,
+        [rehypePrettyCode, { theme: 'github-dark' }] as any,
     ],
 };
 
