@@ -1,7 +1,17 @@
-import { notFound } from 'next/navigation';
+'use client';
+
+import { useEffect, useState } from 'react';
 import { Flex, Heading, Text, Button } from '@/once-ui/components';
-import { createClient } from '@/lib/supabase/server';
 import AssignmentCard from '@/components/academy/AssignmentCard';
+
+type Track = {
+    id: string;
+    name: string;
+    icon: string;
+    color: string;
+    accent: string;
+    description: string;
+};
 
 type Assignment = {
     id: string;
@@ -17,98 +27,108 @@ type Assignment = {
     order_index: number;
 };
 
-type Track = {
-    id: string;
-    name: string;
-    icon: string;
-    color: string;
-    accent: string;
-    description: string;
-};
-
-export default async function TrackPage({
+export default function TrackPage({
     params,
 }: {
-    params: Promise<{ locale: string; trackId: string }>;
+    params: { locale: string; trackId: string };
 }) {
-    const { trackId } = await params;
-    const supabase = await createClient();
+    const [mounted, setMounted] = useState(false);
+    const [track, setTrack] = useState<Track | null>(null);
+    const [assignments, setAssignments] = useState<Assignment[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
-    const [{ data: track, error: trackError }, { data: assignments }] = await Promise.all([
-        supabase.from('tracks').select('*').eq('id', trackId).single(),
-        supabase.from('assignments').select('*').eq('track_id', trackId).order('order_index'),
-    ]);
+    useEffect(() => {
+        setMounted(true);
+    }, []);
 
-    if (trackError || !track) notFound();
+    useEffect(() => {
+        if (!mounted) return;
 
-    const { data: { user } } = await supabase.auth.getUser();
+        const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    let completedIds: Set<string> = new Set();
-    let bestScores: Record<string, { score: number; grade: string }> = {};
+        if (!url || !key) {
+            setError('Supabase environment variables are not configured.');
+            setLoading(false);
+            return;
+        }
 
-    if (user) {
-        const { data: subs } = await supabase
-            .from('submissions')
-            .select('assignment_id, score, grade')
-            .eq('user_id', user.id)
-            .in('assignment_id', (assignments ?? []).map((a: Assignment) => a.id));
+        const headers = { apikey: key, Authorization: `Bearer ${key}` };
 
-        (subs ?? []).forEach((s: any) => {
-            completedIds.add(s.assignment_id);
-            if (!bestScores[s.assignment_id] || s.score > bestScores[s.assignment_id].score) {
-                bestScores[s.assignment_id] = { score: s.score, grade: s.grade };
-            }
-        });
+        Promise.all([
+            fetch(`${url}/rest/v1/tracks?id=eq.${params.trackId}&select=*`, { headers }),
+            fetch(`${url}/rest/v1/assignments?track_id=eq.${params.trackId}&select=*&order=order_index`, { headers }),
+        ])
+            .then(async ([tr, ar]) => {
+                const tracks: Track[] = await tr.json();
+                const assigns: Assignment[] = await ar.json();
+                setTrack(tracks[0] ?? null);
+                setAssignments(
+                    (assigns ?? []).map((a) => ({
+                        ...a,
+                        rubric: Array.isArray(a.rubric)
+                            ? a.rubric
+                            : JSON.parse((a.rubric as unknown as string) ?? '[]'),
+                    })),
+                );
+            })
+            .catch((e) => setError(String(e)))
+            .finally(() => setLoading(false));
+    }, [mounted, params.trackId]);
+
+    if (!mounted) return null;
+
+    if (loading) {
+        return (
+            <Flex fillWidth maxWidth="l" direction="column" gap="16" paddingX="l" paddingY="xl" alignItems="center">
+                <Text onBackground="neutral-weak">Loading track…</Text>
+            </Flex>
+        );
     }
 
-    const t = track as Track;
-    const assignmentList: Assignment[] = (assignments ?? []).map((a: Assignment) => ({
-        ...a,
-        rubric: Array.isArray(a.rubric) ? a.rubric : JSON.parse(a.rubric as unknown as string ?? '[]'),
-        bestScore: bestScores[a.id]?.score,
-        bestGrade: bestScores[a.id]?.grade,
-    }));
+    if (error) {
+        return (
+            <Flex fillWidth maxWidth="l" direction="column" gap="16" paddingX="l" paddingY="xl">
+                <Button variant="tertiary" size="s" label="← Back to Academy" href="/academy" />
+                <Text style={{ color: '#ef4444' }}>{error}</Text>
+            </Flex>
+        );
+    }
+
+    if (!track) {
+        return (
+            <Flex fillWidth maxWidth="l" direction="column" gap="16" paddingX="l" paddingY="xl">
+                <Button variant="tertiary" size="s" label="← Back to Academy" href="/academy" />
+                <Text onBackground="neutral-weak">Track not found: {params.trackId}</Text>
+            </Flex>
+        );
+    }
 
     return (
         <Flex fillWidth maxWidth="l" direction="column" gap="40" paddingX="l" paddingY="xl">
-            <Button
-                variant="tertiary"
-                size="s"
-                label="← Back to Academy"
-                href="/academy"
-            />
+            <Button variant="tertiary" size="s" label="← Back to Academy" href="/academy" />
 
-            {/* Track header */}
             <Flex direction="column" gap="12">
                 <Flex alignItems="center" gap="16">
-                    <span style={{ fontSize: '2.5rem' }}>{t.icon}</span>
+                    <span style={{ fontSize: '2.5rem' }}>{track.icon}</span>
                     <Flex direction="column" gap="4">
-                        <Heading variant="display-strong-m">{t.name}</Heading>
-                        <Text variant="body-default-m" onBackground="neutral-weak">{t.description}</Text>
+                        <Heading variant="display-strong-m">{track.name}</Heading>
+                        <Text variant="body-default-m" onBackground="neutral-weak">{track.description}</Text>
                     </Flex>
                 </Flex>
-                <div
-                    style={{
-                        height: '3px',
-                        borderRadius: '2px',
-                        background: t.accent,
-                        width: '100%',
-                        marginTop: '8px',
-                    }}
-                />
+                <div style={{ height: '3px', borderRadius: '2px', background: track.accent, width: '100%', marginTop: '8px' }} />
             </Flex>
 
-            {/* Assignments */}
             <Flex direction="column" gap="16" fillWidth>
                 <Heading as="h2" variant="heading-strong-m">Assignments</Heading>
-                {assignmentList.length === 0 ? (
+                {assignments.length === 0 ? (
                     <Text onBackground="neutral-weak">No assignments available for this track yet.</Text>
                 ) : (
-                    assignmentList.map((assignment) => (
+                    assignments.map((assignment) => (
                         <AssignmentCard
                             key={assignment.id}
                             assignment={assignment}
-                            completed={completedIds.has(assignment.id)}
                         />
                     ))
                 )}
