@@ -1,12 +1,14 @@
+'use client';
+
 import dynamic from 'next/dynamic';
 
-export const dynamicParams = true;
-
-// ssr:false means Next.js never renders this on the server —
-// the server sends an empty shell and the client renders everything.
-// This is the only reliable way to prevent React hydration error #418
-// for pages that depend entirely on client-side state and browser APIs.
-const TrackPageClient = dynamic(() => import('./_client'), { ssr: false });
+// ssr:false works ONLY when the calling component is a Client Component.
+// Without 'use client' here, Next.js ignores ssr:false and SSRs _client.tsx,
+// producing server HTML that diverges from the client's initial state → #418.
+const TrackPageClient = dynamic(() => import('./_client'), {
+    ssr: false,
+    loading: () => null,
+});
 
 export default function TrackPage({
     params,

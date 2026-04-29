@@ -1,8 +1,11 @@
+'use client';
+
 import dynamic from 'next/dynamic';
 
-export const dynamicParams = true;
-
-const AssignmentPageClient = dynamic(() => import('./_client'), { ssr: false });
+const AssignmentPageClient = dynamic(() => import('./_client'), {
+    ssr: false,
+    loading: () => null,
+});
 
 export default function AssignmentPage({
     params,
