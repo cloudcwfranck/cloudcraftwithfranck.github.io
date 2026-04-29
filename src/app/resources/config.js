@@ -18,6 +18,7 @@ const routes = {
     '/contact':    true,
     '/runbooks':   true,
     '/playground': true,
+    '/mcp':        true,
 }
 
 // Enable password protection on selected routes
