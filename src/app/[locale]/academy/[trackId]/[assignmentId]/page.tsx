@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import { useEffect, useState } from 'react';
 import { Flex, Heading, Text, Button, Tag } from '@/once-ui/components';
 import SubmissionEditor from '@/components/academy/SubmissionEditor';
@@ -31,6 +33,9 @@ export default function AssignmentPage({
 }: {
     params: { locale: string; trackId: string; assignmentId: string };
 }) {
+    // Destructure to primitives so useEffect deps are always stable strings
+    const { trackId, assignmentId } = params;
+
     const [mounted, setMounted] = useState(false);
     const [track, setTrack] = useState<Track | null>(null);
     const [assignment, setAssignment] = useState<Assignment | null>(null);
@@ -38,10 +43,12 @@ export default function AssignmentPage({
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // Mount guard — runs once, prevents any SSR output
     useEffect(() => {
         setMounted(true);
     }, []);
 
+    // Data fetch — only after mount, keyed to stable string params
     useEffect(() => {
         if (!mounted) return;
 
@@ -56,10 +63,9 @@ export default function AssignmentPage({
 
         const headers = { apikey: key, Authorization: `Bearer ${key}` };
 
-        // Fetch track + assignment data and check auth session in parallel
         Promise.all([
-            fetch(`${url}/rest/v1/tracks?id=eq.${params.trackId}&select=id,name,icon,accent`, { headers }),
-            fetch(`${url}/rest/v1/assignments?id=eq.${params.assignmentId}&track_id=eq.${params.trackId}&select=*`, { headers }),
+            fetch(`${url}/rest/v1/tracks?id=eq.${trackId}&select=id,name,icon,accent`, { headers }),
+            fetch(`${url}/rest/v1/assignments?id=eq.${assignmentId}&track_id=eq.${trackId}&select=*`, { headers }),
             fetch(`${url}/auth/v1/user`, {
                 headers: { ...headers, 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -69,26 +75,35 @@ export default function AssignmentPage({
                 const tracks: Track[] = await tr.json();
                 const assigns: Assignment[] = await ar.json();
 
-                setTrack(tracks[0] ?? null);
                 const a = assigns[0] ?? null;
-                if (a) {
-                    setAssignment({
-                        ...a,
-                        rubric: Array.isArray(a.rubric)
-                            ? a.rubric
-                            : JSON.parse((a.rubric as unknown as string) ?? '[]'),
-                    });
-                }
+
+                // Batch all state updates together — collapses to a single re-render
+                setTrack(tracks[0] ?? null);
+                setAssignment(
+                    a
+                        ? {
+                              ...a,
+                              rubric: Array.isArray(a.rubric)
+                                  ? a.rubric
+                                  : JSON.parse((a.rubric as unknown as string) ?? '[]'),
+                          }
+                        : null,
+                );
 
                 if (ur.ok) {
                     const user = await ur.json();
                     setUserId(user?.id ?? null);
                 }
-            })
-            .catch((e) => setError(String(e)))
-            .finally(() => setLoading(false));
-    }, [mounted, params.trackId, params.assignmentId]);
 
+                setLoading(false);
+            })
+            .catch((e) => {
+                setError(String(e));
+                setLoading(false);
+            });
+    }, [mounted, trackId, assignmentId]); // stable primitives — no object reference churn
+
+    // No SSR output — avoids hydration mismatch
     if (!mounted) return null;
 
     if (loading) {
@@ -102,7 +117,7 @@ export default function AssignmentPage({
     if (error) {
         return (
             <Flex fillWidth maxWidth="xl" direction="column" gap="16" paddingX="l" paddingY="xl">
-                <Button variant="tertiary" size="s" label={`← Back`} href={`/academy/${params.trackId}`} />
+                <Button variant="tertiary" size="s" label="← Back" href={`/academy/${trackId}`} />
                 <Text style={{ color: '#ef4444' }}>{error}</Text>
             </Flex>
         );
@@ -111,7 +126,7 @@ export default function AssignmentPage({
     if (!track || !assignment) {
         return (
             <Flex fillWidth maxWidth="xl" direction="column" gap="16" paddingX="l" paddingY="xl">
-                <Button variant="tertiary" size="s" label={`← Back`} href={`/academy/${params.trackId}`} />
+                <Button variant="tertiary" size="s" label="← Back" href={`/academy/${trackId}`} />
                 <Text onBackground="neutral-weak">Assignment not found.</Text>
             </Flex>
         );
@@ -124,7 +139,7 @@ export default function AssignmentPage({
                     variant="tertiary"
                     size="s"
                     label={`← ${track.name}`}
-                    href={`/academy/${params.trackId}`}
+                    href={`/academy/${trackId}`}
                 />
             </Flex>
 
@@ -197,7 +212,9 @@ export default function AssignmentPage({
                             placeholder={assignment.placeholder}
                         />
                     ) : (
-                        <SignIn redirectTo={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/academy/${params.trackId}/${params.assignmentId}`} />
+                        <SignIn
+                            redirectTo={`${process.env.NEXT_PUBLIC_SITE_URL ?? ''}/academy/${trackId}/${assignmentId}`}
+                        />
                     )}
                 </Flex>
             </div>

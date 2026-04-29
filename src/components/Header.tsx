@@ -158,7 +158,7 @@ export const Header = () => {
                             )}
                             {routes["/tools/diagram-generator"] && (
                                 <ToggleButton
-                                    prefixIcon="diagram"
+                                    prefixIcon="arrowUpRight"
                                     href={`/${params?.locale}/tools/diagram-generator`}
                                     selected={pathname.startsWith("/tools/diagram-generator")}
                                 >
@@ -169,7 +169,7 @@ export const Header = () => {
                             )}
                             {routes["/playground"] && (
                                 <ToggleButton
-                                    prefixIcon="code"
+                                    prefixIcon="openLink"
                                     href={`/${params?.locale}/playground`}
                                     selected={pathname.startsWith("/playground")}
                                 >
@@ -180,7 +180,7 @@ export const Header = () => {
                             )}
                             {routes["/academy"] && (
                                 <ToggleButton
-                                    prefixIcon="sparkle"
+                                    prefixIcon="checkCircle"
                                     href={`/${params?.locale}/academy`}
                                     selected={pathname.startsWith("/academy")}
                                 >

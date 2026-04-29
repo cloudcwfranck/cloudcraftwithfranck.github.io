@@ -1,5 +1,7 @@
 'use client';
 
+export const dynamic = 'force-dynamic';
+
 import { useEffect, useState } from 'react';
 import { Flex, Heading, Text, Button } from '@/once-ui/components';
 import AssignmentCard from '@/components/academy/AssignmentCard';
@@ -32,16 +34,21 @@ export default function TrackPage({
 }: {
     params: { locale: string; trackId: string };
 }) {
+    // Destructure to primitives so useEffect deps are always stable strings
+    const { trackId } = params;
+
     const [mounted, setMounted] = useState(false);
     const [track, setTrack] = useState<Track | null>(null);
     const [assignments, setAssignments] = useState<Assignment[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    // Mount guard — runs once, prevents any SSR output
     useEffect(() => {
         setMounted(true);
     }, []);
 
+    // Data fetch — only after mount, keyed to the stable trackId string
     useEffect(() => {
         if (!mounted) return;
 
@@ -57,12 +64,13 @@ export default function TrackPage({
         const headers = { apikey: key, Authorization: `Bearer ${key}` };
 
         Promise.all([
-            fetch(`${url}/rest/v1/tracks?id=eq.${params.trackId}&select=*`, { headers }),
-            fetch(`${url}/rest/v1/assignments?track_id=eq.${params.trackId}&select=*&order=order_index`, { headers }),
+            fetch(`${url}/rest/v1/tracks?id=eq.${trackId}&select=*`, { headers }),
+            fetch(`${url}/rest/v1/assignments?track_id=eq.${trackId}&select=*&order=order_index`, { headers }),
         ])
             .then(async ([tr, ar]) => {
                 const tracks: Track[] = await tr.json();
                 const assigns: Assignment[] = await ar.json();
+                // Batch both state updates together (React 18 auto-batches in async)
                 setTrack(tracks[0] ?? null);
                 setAssignments(
                     (assigns ?? []).map((a) => ({
@@ -72,11 +80,15 @@ export default function TrackPage({
                             : JSON.parse((a.rubric as unknown as string) ?? '[]'),
                     })),
                 );
+                setLoading(false);
             })
-            .catch((e) => setError(String(e)))
-            .finally(() => setLoading(false));
-    }, [mounted, params.trackId]);
+            .catch((e) => {
+                setError(String(e));
+                setLoading(false);
+            });
+    }, [mounted, trackId]); // stable primitive — no object reference churn
 
+    // No SSR output — avoids hydration mismatch
     if (!mounted) return null;
 
     if (loading) {
@@ -100,7 +112,7 @@ export default function TrackPage({
         return (
             <Flex fillWidth maxWidth="l" direction="column" gap="16" paddingX="l" paddingY="xl">
                 <Button variant="tertiary" size="s" label="← Back to Academy" href="/academy" />
-                <Text onBackground="neutral-weak">Track not found: {params.trackId}</Text>
+                <Text onBackground="neutral-weak">Track not found: {trackId}</Text>
             </Flex>
         );
     }
@@ -126,10 +138,7 @@ export default function TrackPage({
                     <Text onBackground="neutral-weak">No assignments available for this track yet.</Text>
                 ) : (
                     assignments.map((assignment) => (
-                        <AssignmentCard
-                            key={assignment.id}
-                            assignment={assignment}
-                        />
+                        <AssignmentCard key={assignment.id} assignment={assignment} />
                     ))
                 )}
             </Flex>
