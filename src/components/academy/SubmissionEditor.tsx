@@ -1,10 +1,8 @@
-"use client";
+'use client';
 
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Flex, Text, Button } from '@/once-ui/components';
 import ScoreResult from './ScoreResult';
-import styles from '@/styles/academy.module.scss';
 
 type Props = {
     assignmentId: string;
@@ -60,7 +58,7 @@ export default function SubmissionEditor({
             if (!res.ok) throw new Error('Scoring failed');
             const data = await res.json();
             setResult(data);
-        } catch (err) {
+        } catch {
             setError('Scoring failed. Please try again.');
         } finally {
             setSubmitting(false);
@@ -69,58 +67,97 @@ export default function SubmissionEditor({
 
     if (result) {
         return (
-            <Flex direction="column" gap="24" fillWidth>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%' }}>
                 <ScoreResult data={result} />
-                <Button
-                    variant="tertiary"
-                    size="s"
-                    label="Submit again"
+                <button
                     onClick={() => setResult(null)}
-                />
-            </Flex>
+                    style={{
+                        background: 'none',
+                        border: '1px solid var(--neutral-border-medium, #333)',
+                        color: 'var(--neutral-on-background-weak, #888)',
+                        padding: '8px 16px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '0.875rem',
+                        alignSelf: 'flex-start',
+                    }}
+                >
+                    Submit again
+                </button>
+            </div>
         );
     }
 
     return (
-        <Flex direction="column" gap="16" fillWidth>
-            {/* File upload dropzone */}
-            <div {...getRootProps()} className={`${styles.dropzone} ${isDragActive ? styles.active : ''}`}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
+            {/* Dropzone */}
+            <div
+                {...getRootProps()}
+                style={{
+                    border: `2px dashed ${isDragActive ? 'var(--brand-border-strong, #3b82f6)' : 'var(--neutral-border-medium, #333)'}`,
+                    borderRadius: '10px',
+                    padding: '32px 24px',
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    background: isDragActive ? 'rgba(59,130,246,0.05)' : 'transparent',
+                    transition: 'all 0.2s',
+                }}
+            >
                 <input {...getInputProps()} />
-                <Text variant="body-default-s" onBackground="neutral-weak">
-                    {isDragActive
-                        ? 'Drop the file here…'
-                        : 'Drag & drop a file, or click to browse'}
-                </Text>
-                <Text variant="label-default-xs" onBackground="neutral-weak">
+                <p style={{ margin: '0 0 4px', fontSize: '0.875rem', color: 'var(--neutral-on-background-weak, #888)' }}>
+                    {isDragActive ? 'Drop the file here…' : 'Drag & drop a file, or click to browse'}
+                </p>
+                <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--neutral-on-background-weak, #888)' }}>
                     .bicep, .yaml, .json, .tf, .kql, .txt
-                </Text>
+                </p>
             </div>
 
-            <Text variant="label-default-s" onBackground="neutral-weak" style={{ textAlign: 'center' }}>
+            <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--neutral-on-background-weak, #888)', textAlign: 'center' }}>
                 — or type / paste below —
-            </Text>
+            </p>
 
             <textarea
-                className={styles.textarea}
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder={placeholder}
                 spellCheck={false}
+                style={{
+                    width: '100%',
+                    minHeight: '280px',
+                    padding: '14px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--neutral-border-medium, #333)',
+                    background: 'var(--neutral-background-strong, #111)',
+                    color: 'var(--neutral-on-background-strong, #f0f0f0)',
+                    fontSize: '0.875rem',
+                    fontFamily: 'var(--font-code, monospace)',
+                    resize: 'vertical',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                }}
             />
 
             {error && (
-                <Text variant="label-default-s" style={{ color: '#ef4444' }}>
-                    {error}
-                </Text>
+                <p style={{ margin: 0, fontSize: '0.875rem', color: '#ef4444' }}>{error}</p>
             )}
 
-            <Button
-                variant="primary"
-                size="m"
-                label={submitting ? 'Scoring with AI…' : 'Submit for Scoring'}
+            <button
                 onClick={handleSubmit}
                 disabled={submitting}
-            />
-        </Flex>
+                style={{
+                    padding: '12px 24px',
+                    borderRadius: '10px',
+                    border: 'none',
+                    background: submitting ? 'var(--neutral-border-medium, #444)' : 'var(--brand-background-strong, #3b82f6)',
+                    color: '#fff',
+                    fontSize: '0.95rem',
+                    fontWeight: 600,
+                    cursor: submitting ? 'not-allowed' : 'pointer',
+                    transition: 'background 0.2s',
+                }}
+            >
+                {submitting ? 'Scoring with AI…' : 'Submit for Scoring'}
+            </button>
+        </div>
     );
 }

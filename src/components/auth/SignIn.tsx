@@ -1,7 +1,6 @@
-"use client";
+'use client';
 
 import { useState } from 'react';
-import { Flex, Text, Button } from '@/once-ui/components';
 import { createClient } from '@/lib/supabase/client';
 
 type Props = {
@@ -34,42 +33,33 @@ export default function SignIn({ redirectTo }: Props) {
         }
     }
 
+    const cardStyle: React.CSSProperties = {
+        padding: '24px',
+        borderRadius: '12px',
+        border: '1px solid var(--neutral-border-medium, #333)',
+        background: 'var(--neutral-background-strong, #1a1a1a)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+    };
+
     if (sent) {
         return (
-            <Flex
-                direction="column"
-                gap="8"
-                padding="24"
-                background="surface"
-                border="neutral-medium"
-                borderStyle="solid-1"
-                radius="l"
-                alignItems="center"
-            >
-                <Text variant="heading-strong-s">📬 Check your inbox</Text>
-                <Text variant="body-default-s" onBackground="neutral-weak">
+            <div style={{ ...cardStyle, alignItems: 'center', textAlign: 'center' }}>
+                <p style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>📬 Check your inbox</p>
+                <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--neutral-on-background-weak, #888)' }}>
                     We sent a magic link to <strong>{email}</strong>
-                </Text>
-            </Flex>
+                </p>
+            </div>
         );
     }
 
     return (
-        <Flex
-            as="form"
-            direction="column"
-            gap="12"
-            padding="24"
-            background="surface"
-            border="neutral-medium"
-            borderStyle="solid-1"
-            radius="l"
-            onSubmit={handleSignIn as any}
-        >
-            <Text variant="heading-strong-s">Sign in to CloudCert Academy</Text>
-            <Text variant="body-default-s" onBackground="neutral-weak">
+        <form onSubmit={handleSignIn} style={cardStyle}>
+            <p style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Sign in to CloudCert Academy</p>
+            <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--neutral-on-background-weak, #888)' }}>
                 Enter your email — we'll send you a magic link.
-            </Text>
+            </p>
             <input
                 type="email"
                 value={email}
@@ -77,26 +67,36 @@ export default function SignIn({ redirectTo }: Props) {
                 placeholder="you@example.com"
                 required
                 style={{
-                    background: 'var(--neutral-background-strong)',
-                    color: 'var(--neutral-on-background-strong)',
-                    border: '1px solid var(--neutral-border-medium)',
-                    borderRadius: 'var(--radius-m)',
+                    background: 'var(--neutral-background-medium, #111)',
+                    color: 'var(--neutral-on-background-strong, #f0f0f0)',
+                    border: '1px solid var(--neutral-border-medium, #333)',
+                    borderRadius: '8px',
                     padding: '10px 14px',
                     fontSize: '0.9rem',
                     outline: 'none',
                     width: '100%',
+                    boxSizing: 'border-box',
                 }}
             />
             {error && (
-                <Text variant="label-default-s" style={{ color: '#ef4444' }}>{error}</Text>
+                <p style={{ margin: 0, fontSize: '0.875rem', color: '#ef4444' }}>{error}</p>
             )}
-            <Button
+            <button
                 type="submit"
-                variant="primary"
-                size="m"
-                label={loading ? 'Sending…' : 'Send Magic Link'}
                 disabled={loading}
-            />
-        </Flex>
+                style={{
+                    padding: '10px 20px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: loading ? 'var(--neutral-border-medium, #444)' : 'var(--brand-background-strong, #3b82f6)',
+                    color: '#fff',
+                    fontSize: '0.9rem',
+                    fontWeight: 600,
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                }}
+            >
+                {loading ? 'Sending…' : 'Send Magic Link'}
+            </button>
+        </form>
     );
 }
