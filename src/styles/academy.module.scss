@@ -1,0 +1,242 @@
+/* Academy module — uses site CSS variables from Once-UI tokens */
+
+/* Track card grid */
+.trackGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--static-space-24);
+    width: 100%;
+}
+
+.trackCard {
+    cursor: pointer;
+    transition: transform var(--transition-micro-medium), box-shadow var(--transition-micro-medium);
+
+    &:hover {
+        transform: translateY(-2px);
+    }
+}
+
+.trackIcon {
+    font-size: 2rem;
+    line-height: 1;
+}
+
+.trackColorBar {
+    height: 3px;
+    border-radius: 2px;
+    width: 100%;
+}
+
+/* XP progress bar */
+.xpBarOuter {
+    width: 100%;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--neutral-alpha-weak);
+    overflow: hidden;
+}
+
+.xpBarInner {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--brand-solid-strong), var(--accent-solid-strong));
+    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: xpFill 1s cubic-bezier(0.4, 0, 0.2, 1) both;
+
+    @keyframes xpFill {
+        from { width: 0 !important; }
+    }
+}
+
+/* Score gauge */
+.gaugeWrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.gaugeLabel {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    pointer-events: none;
+}
+
+.gaugeSvg {
+    transform: rotate(-90deg);
+    overflow: visible;
+}
+
+.gaugeTrack {
+    fill: none;
+    stroke: var(--neutral-alpha-weak);
+}
+
+.gaugeArc {
+    fill: none;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: arcDraw 1.2s cubic-bezier(0.4, 0, 0.2, 1) both;
+
+    @keyframes arcDraw {
+        from { stroke-dashoffset: 440; }
+    }
+}
+
+/* Rubric bar */
+.rubricBars {
+    display: flex;
+    flex-direction: column;
+    gap: var(--static-space-12);
+    width: 100%;
+}
+
+.rubricBarRow {
+    display: flex;
+    flex-direction: column;
+    gap: var(--static-space-4);
+}
+
+.rubricBarOuter {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--neutral-alpha-weak);
+    overflow: hidden;
+}
+
+.rubricBarInner {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--brand-solid-strong);
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Assignment editor layout */
+.editorLayout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--static-space-24);
+    align-items: start;
+
+    @media (max-width: 768px) {
+        grid-template-columns: 1fr;
+    }
+}
+
+.textarea {
+    width: 100%;
+    min-height: 320px;
+    resize: vertical;
+    font-family: var(--font-code, 'JetBrains Mono', 'Fira Code', monospace);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    background: var(--neutral-background-strong);
+    color: var(--neutral-on-background-strong);
+    border: 1px solid var(--neutral-border-medium);
+    border-radius: var(--radius-m);
+    padding: var(--static-space-16);
+    outline: none;
+    transition: border-color var(--transition-micro-medium);
+
+    &:focus {
+        border-color: var(--brand-border-strong);
+    }
+}
+
+/* Dropzone */
+.dropzone {
+    border: 2px dashed var(--neutral-border-medium);
+    border-radius: var(--radius-m);
+    padding: var(--static-space-24);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color var(--transition-micro-medium), background var(--transition-micro-medium);
+
+    &:hover,
+    &.active {
+        border-color: var(--brand-border-strong);
+        background: var(--brand-background-weak);
+    }
+}
+
+/* Cert card */
+.certCard {
+    border: 1px solid var(--brand-border-medium);
+    border-radius: var(--radius-l);
+    padding: var(--static-space-32);
+    background: linear-gradient(135deg, var(--neutral-background-strong), var(--brand-background-weak));
+    position: relative;
+    overflow: hidden;
+
+    &::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background: linear-gradient(90deg, var(--brand-solid-strong), var(--accent-solid-strong));
+    }
+}
+
+.certBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--static-space-8);
+    padding: var(--static-space-4) var(--static-space-12);
+    border-radius: var(--radius-full);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.bronze  { background: rgba(205, 127, 50, 0.15); color: #cd7f32; border: 1px solid rgba(205, 127, 50, 0.4); }
+.silver  { background: rgba(192, 192, 192, 0.15); color: #c0c0c0; border: 1px solid rgba(192, 192, 192, 0.4); }
+.gold    { background: rgba(255, 215, 0, 0.15);   color: #ffd700; border: 1px solid rgba(255, 215, 0, 0.4); }
+.platinum { background: rgba(229, 228, 226, 0.15); color: #e5e4e2; border: 1px solid rgba(229, 228, 226, 0.4); }
+
+/* Grade badge */
+.grade {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.gradeA  { background: rgba(34, 197, 94, 0.15);  color: #22c55e; border: 2px solid rgba(34, 197, 94, 0.5); }
+.gradeB  { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 2px solid rgba(59, 130, 246, 0.5); }
+.gradeC  { background: rgba(234, 179, 8, 0.15);  color: #eab308; border: 2px solid rgba(234, 179, 8, 0.5); }
+.gradeD  { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 2px solid rgba(249, 115, 22, 0.5); }
+.gradeF  { background: rgba(239, 68, 68, 0.15);  color: #ef4444; border: 2px solid rgba(239, 68, 68, 0.5); }
+
+/* Print cert */
+@media print {
+    .certCard {
+        border: 2px solid #000;
+        box-shadow: none;
+    }
+}
+
+/* Cert ready banner */
+.certReadyBanner {
+    display: flex;
+    align-items: center;
+    gap: var(--static-space-8);
+    padding: var(--static-space-12) var(--static-space-16);
+    border-radius: var(--radius-m);
+    background: rgba(34, 197, 94, 0.1);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #22c55e;
+    font-weight: 600;
+}

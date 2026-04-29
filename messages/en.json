@@ -77,5 +77,81 @@
     },
     "projectCard": {
         "label": "Read Case Study"
+    },
+    "nav": {
+        "academy": "Academy"
+    },
+    "academy": {
+        "label": "Academy",
+        "title": "CloudCert Academy",
+        "description": "AI-scored labs for Azure, FedRAMP, AKS, DevSecOps & SecOps",
+        "subtitle": "Master cloud infrastructure through hands-on labs scored by AI against real-world standards.",
+        "tracks": {
+            "title": "Learning Tracks",
+            "assignmentCount": "{count} assignments",
+            "xpMax": "Up to {xp} XP",
+            "start": "Start Track"
+        },
+        "auth": {
+            "signInCta": "Sign in to track progress",
+            "signIn": "Sign in",
+            "signOut": "Sign out",
+            "emailLabel": "Email address",
+            "emailPlaceholder": "you@example.com",
+            "magicLinkSent": "Check your email for a magic link!",
+            "signingIn": "Sending magic link..."
+        },
+        "xp": {
+            "total": "{xp} XP",
+            "level": "Level: {level}",
+            "nextLevel": "{xp} XP to {level}",
+            "bronze": "Bronze",
+            "silver": "Silver",
+            "gold": "Gold",
+            "platinum": "Platinum"
+        },
+        "assignment": {
+            "brief": "Assignment Brief",
+            "rubric": "Rubric Criteria",
+            "submit": "Submit for Scoring",
+            "submitting": "Scoring with AI...",
+            "uploadLabel": "Upload file",
+            "uploadHint": "Supports .bicep, .yaml, .json, .tf, .kql, .txt",
+            "editorPlaceholder": "Paste or type your submission here...",
+            "level": "Level {level}",
+            "xpReward": "{xp} XP",
+            "back": "Back to Track",
+            "startAssignment": "Start Assignment"
+        },
+        "score": {
+            "title": "Score Result",
+            "overall": "Overall Score",
+            "grade": "Grade",
+            "rubricBreakdown": "Rubric Breakdown",
+            "strengths": "Strengths",
+            "gaps": "Gaps",
+            "securityFindings": "Security Findings",
+            "recommendation": "Recommendation",
+            "certReady": "Certification Ready",
+            "notCertReady": "Keep practicing",
+            "xpEarned": "+{xp} XP earned"
+        },
+        "certifications": {
+            "title": "My Certifications",
+            "description": "Your earned CloudCert certifications",
+            "none": "No certifications yet. Complete assignments to earn XP!",
+            "certNumber": "Cert #{number}",
+            "issuedAt": "Issued {date}",
+            "printCert": "Print Certificate",
+            "progress": "Progress to next level",
+            "bronze": "Bronze",
+            "silver": "Silver",
+            "gold": "Gold",
+            "platinum": "Platinum",
+            "bronzeReq": "150 XP",
+            "silverReq": "450 XP",
+            "goldReq": "900 XP",
+            "platinumReq": "1500 XP"
+        }
     }
 }

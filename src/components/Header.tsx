@@ -178,6 +178,17 @@ export const Header = () => {
                                     </Flex>
                                 </ToggleButton>
                             )}
+                            {routes["/academy"] && (
+                                <ToggleButton
+                                    prefixIcon="sparkle"
+                                    href={`/${params?.locale}/academy`}
+                                    selected={pathname.startsWith("/academy")}
+                                >
+                                    <Flex paddingX="2" hide="s">
+                                        {t("nav.academy")}
+                                    </Flex>
+                                </ToggleButton>
+                            )}
                         </Flex>
                     </Flex>
                 </Flex>
