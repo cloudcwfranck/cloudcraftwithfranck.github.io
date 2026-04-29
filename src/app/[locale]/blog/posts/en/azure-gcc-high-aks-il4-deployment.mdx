@@ -1,0 +1,334 @@
+---
+title: "Azure Gcc High Aks Il4 Deployment"
+publishedAt: "2026-04-29"
+summary: "A deep-dive into azure gcc high aks il4 deployment for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Kubernetes"
+---
+
+## Deploying AKS on Azure GCC High for DoD IL4 Workloads: A Field-Tested Implementation Guide
+
+If you're working in a DoD or federal civilian environment and you've been tasked with running containerized workloads at Impact Level 4 on Azure Government, this guide is for you. I've architected and deployed AKS clusters across multiple GCC High tenants for IL4 and IL5 programs, and I want to give you the exact playbook I use — not a sanitized overview, but real commands, real control mappings, and real pitfalls I've personally walked into.
+
+Let's get into it.
+
+---
+
+## Why AKS on GCC High for IL4 Matters
+
+Azure Government Community Cloud High (GCC High) is Microsoft's sovereign cloud environment purpose-built for DoD contractors, defense agencies, and federal entities handling Controlled Unclassified Information (CUI) and data governed by ITAR, EAR, or DFARS 252.204-7012. IL4 authorization covers CUI and mission-critical DoD workloads that don't reach classified (IL5/IL6) thresholds.
+
+Running AKS at IL4 means every layer of your stack — the API server, node pools, networking, secrets management, container registry, and runtime — must satisfy the DoD Cloud Computing Security Requirements Guide (SRG) and align with NIST 800-53 Rev 5 controls enforced through FedRAMP High and the DoD PA (Provisional Authorization).
+
+The specific controls this architecture directly addresses include:
+
+- **AC-2 / AC-3**: Identity and access enforcement via Azure AD (Entra ID) RBAC and Kubernetes RBAC
+- **AU-2 / AU-12**: Audit logging via Diagnostic Settings → Log Analytics → Microsoft Sentinel
+- **CM-6 / CM-7**: Configuration hardening via Azure Policy and OPA Gatekeeper
+- **IA-2 / IA-5**: MFA and managed identity enforcement
+- **SC-7 / SC-8**: Network boundary protection and encryption in transit
+- **SI-2 / SI-3**: Vulnerability scanning via Microsoft Defender for Containers
+
+---
+
+## Architecture Overview Before You Write a Single Command
+
+Before touching the CLI, lock in these architectural decisions for IL4 compliance:
+
+1. **Private cluster only** — API server must not be publicly accessible
+2. **Azure CNI** (not kubenet) — required for network policy enforcement at IL4
+3. **Managed identities** — no service principals with client secrets
+4. **Entra ID-integrated RBAC** — disable legacy local accounts
+5. **Encryption at rest** — customer-managed keys (CMK) in Azure Key Vault Managed HSM
+6. **Node OS hardening** — use the CIS-hardened node image or Azure Linux (Mariner)
+7. **Private ACR** — container images pulled only from a GCC High-native private registry
+8. **Defender for Containers** — enabled at the subscription level via Defender for Cloud
+
+---
+
+## Step 1: Provision the Foundation — Resource Group, VNET, and Private DNS
+
+Start by setting your environment context. Everything below assumes you're authenticated to Azure Government (GCC High) with `az cloud set`.
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "Foundation Setup",
+      language: "bash",
+      code: `#!/bin/bash
+# Set cloud context to Azure Government (GCC High)
+az cloud set --name AzureUSGovernment
+az login --tenant <YOUR_GCCHIGH_TENANT_ID>
+
+# Variables
+SUBSCRIPTION_ID="<your-subscription-id>"
+RESOURCE_GROUP="rg-il4-aks-prod"
+LOCATION="usgovvirginia"
+VNET_NAME="vnet-il4-aks"
+AKS_SUBNET="snet-aks-nodes"
+PE_SUBNET="snet-private-endpoints"
+LOG_ANALYTICS_WS="law-il4-aks-prod"
+
+az account set --subscription $SUBSCRIPTION_ID
+
+# Create Resource Group
+az group create \\
+  --name $RESOURCE_GROUP \\
+  --location $LOCATION \\
+  --tags Environment=Production Classification=IL4 Owner=CloudOps
+
+# Create Log Analytics Workspace (required before cluster — not after)
+az monitor log-analytics workspace create \\
+  --resource-group $RESOURCE_GROUP \\
+  --workspace-name $LOG_ANALYTICS_WS \\
+  --location $LOCATION \\
+  --sku PerGB2018 \\
+  --retention-time 365
+
+# Create VNET with dedicated subnets
+az network vnet create \\
+  --resource-group $RESOURCE_GROUP \\
+  --name $VNET_NAME \\
+  --address-prefixes 10.10.0.0/16 \\
+  --subnet-name $AKS_SUBNET \\
+  --subnet-prefixes 10.10.1.0/24 \\
+  --location $LOCATION
+
+az network vnet subnet create \\
+  --resource-group $RESOURCE_GROUP \\
+  --vnet-name $VNET_NAME \\
+  --name $PE_SUBNET \\
+  --address-prefixes 10.10.2.0/24 \\
+  --disable-private-endpoint-network-policies true
+
+# Retrieve Subnet IDs
+AKS_SUBNET_ID=$(az network vnet subnet show \\
+  --resource-group $RESOURCE_GROUP \\
+  --vnet-name $VNET_NAME \\
+  --name $AKS_SUBNET \\
+  --query id -o tsv)
+
+echo "AKS Subnet ID: $AKS_SUBNET_ID"`
+    }
+  ]}
+  copyButton
+/>
+
+---
+
+## Step 2: Deploy the IL4-Hardened AKS Cluster
+
+This is where most people make mistakes. Pay close attention to the flags I'm using and why each one is there from a compliance standpoint.
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "AKS IL4 Cluster Deployment",
+      language: "bash",
+      code: `#!/bin/bash
+CLUSTER_NAME="aks-il4-prod"
+LOG_WS_ID=$(az monitor log-analytics workspace show \\
+  --resource-group $RESOURCE_GROUP \\
+  --workspace-name $LOG_ANALYTICS_WS \\
+  --query id -o tsv)
+
+az aks create \\
+  --resource-group $RESOURCE_GROUP \\
+  --name $CLUSTER_NAME \\
+  --location $LOCATION \\
+  --kubernetes-version 1.29.2 \\
+  --node-count 3 \\
+  --node-vm-size Standard_D4s_v5 \\
+  --os-sku AzureLinux \\
+  --vnet-subnet-id $AKS_SUBNET_ID \\
+  --network-plugin azure \\
+  --network-policy azure \\
+  --enable-private-cluster \\
+  --private-dns-zone system \\
+  --enable-aad \\
+  --aad-admin-group-object-ids "<ENTRA_ADMIN_GROUP_OBJECT_ID>" \\
+  --enable-azure-rbac \\
+  --disable-local-accounts \\
+  --enable-managed-identity \\
+  --enable-oidc-issuer \\
+  --enable-workload-identity \\
+  --enable-addons monitoring,azure-policy,azure-keyvault-secrets-provider \\
+  --workspace-resource-id $LOG_WS_ID \\
+  --enable-defender \\
+  --enable-encryption-at-host \\
+  --node-os-upgrade-channel NodeImage \\
+  --auto-upgrade-channel stable \\
+  --tags Environment=Production Classification=IL4 \\
+  --generate-ssh-keys
+
+# CRITICAL: Disable public FQDN on the API server
+az aks update \\
+  --resource-group $RESOURCE_GROUP \\
+  --name $CLUSTER_NAME \\
+  --disable-public-fqdn
+
+echo "Cluster deployed. Retrieving credentials via private endpoint only."
+az aks get-credentials \\
+  --resource-group $RESOURCE_GROUP \\
+  --name $CLUSTER_NAME \\
+  --overwrite-existing`
+    }
+  ]}
+  copyButton
+/>
+
+Key compliance flags explained:
+- `--os-sku AzureLinux`: Azure Linux (CBL-Mariner) has a significantly smaller attack surface than Ubuntu — critical for SI-2 (patch management) and CM-6
+- `--disable-local-accounts`: Enforces Entra ID-only auth, satisfying IA-2 and AC-2
+- `--enable-azure-rbac`: Maps Kubernetes RBAC to Azure RBAC roles, giving you a single IAM plane auditable in Azure Monitor
+- `--enable-workload-identity + --enable-oidc-issuer`: Replaces pod-level service principal credentials with federated identity tokens — eliminates a massive secret sprawl problem I see in almost every IL4 audit
+- `--enable-encryption-at-host`: Encrypts the OS disk temp disk and cache at the hypervisor level, satisfying SC-28
+
+---
+
+## Step 3: Apply Azure Policy for IL4 Guardrails
+
+Azure Policy is your automated CM-6 and CM-7 enforcement layer. GCC High includes the built-in **Kubernetes cluster pod security restricted standards** initiative. I also layer in the **NIST SP 800-53 Rev 5** built-in policy initiative.
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "Azure Policy and OPA Gatekeeper",
+      language: "bash",
+      code: `#!/bin/bash
+SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP"
+AKS_ID=$(az aks show --resource-group $RESOURCE_GROUP --name $CLUSTER_NAME --query id -o tsv)
+
+# Assign NIST 800-53 Rev 5 policy initiative at RG scope
+az policy assignment create \\
+  --name "nist-80053-r5-il4" \\
+  --display-name "NIST SP 800-53 Rev 5 - IL4 AKS" \\
+  --policy-set-definition "179d1daa-458f-4e47-8086-2a68d0d6c38f" \\
+  --scope $SCOPE \\
+  --enforcement-mode Default
+
+# Assign Kubernetes restricted pod security standards (built-in)
+az policy assignment create \\
+  --name "k8s-restricted-il4" \\
+  --display-name "Kubernetes Pod Security Restricted - IL4" \\
+  --policy-set-definition "42b8ef37-b724-4e24-bbc8-7a7708edfe00" \\
+  --scope $AKS_ID \\
+  --enforcement-mode Default \\
+  --params '{
+    "excludedNamespaces": {
+      "value": ["kube-system", "gatekeeper-system", "azure-arc"]
+    },
+    "effect": {
+      "value": "deny"
+    }
+  }'
+
+# Deny privileged containers — direct policy assignment
+az policy assignment create \\
+  --name "deny-privileged-containers" \\
+  --display-name "Deny Privileged Containers - IL4" \\
+  --policy-definition "95edb821-ddaf-4404-9732-666045e056b4" \\
+  --scope $AKS_ID \\
+  --enforcement-mode Default
+
+# Query policy compliance state via KQL in Log Analytics
+cat <<'KQL'
+-- Run this in Log Analytics to audit policy compliance
+PolicyStates
+| where TimeGenerated > ago(24h)
+| where ResourceType =~ "microsoft.containerservice/managedclusters"
+| where ComplianceState == "NonCompliant"
+| project TimeGenerated, PolicyAssignmentName, ResourceId, PolicyDefinitionName, ComplianceReasonCode
+| order by TimeGenerated desc
+KQL`
+    }
+  ]}
+  copyButton
+/>
+
+---
+
+## Step 4: Secrets Management with Key Vault and Workload Identity
+
+At IL4, secrets cannot live in Kubernetes Secrets in plaintext base64. You must integrate Azure Key Vault with the CSI Secrets Store driver, backed by a Key Vault instance using a customer-managed key and private endpoint.
+
+```bash
+# Create Key Vault with CMK and private access only
+az keyvault create \
+  --name kv-il4-aks-prod \
+  --resource-group $RESOURCE_GROUP \
+  --location $LOCATION \
+  --sku premium \
+  --enable-purge-protection true \
+  --retention-days 90 \
+  --default-action Deny \
+  --bypass AzureServices \
+  --enable-rbac-authorization true
+
+# Disable public network access
+az keyvault update \
+  --name kv-il4-aks-prod \
+  --resource-group $RESOURCE_GROUP \
+  --public-network-access Disabled
+```
+
+For your pods to consume secrets, configure a `SecretProviderClass` that references the Key Vault using a workload identity federated credential — no client secrets in your YAML manifests.
+
+```yaml
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: il4-kv-secrets
+  namespace: app-workload
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    clientID: "<USER_ASSIGNED_MANAGED_IDENTITY_CLIENT_ID>"
+    keyvaultName: "kv-il4-aks-prod"
+    cloudName: "AzureUSGovernmentCloud"
+    objects: |
+      array:
+        - |
+          objectName: db-connection-string
+          objectType: secret
+          objectVersion: ""
+    tenantId: "<YOUR_GCCHIGH_TENANT_ID>"
+```
+
+---
+
+## Key NIST 800-53 Controls Addressed by This Architecture
+
+| Control Family | Control | Implementation |
+|---|---|---|
+| Access Control | AC-2, AC-3, AC-6 | Entra ID RBAC, Azure RBAC for K8s, disable local accounts |
+| Audit & Accountability | AU-2, AU-9, AU-12 | Diagnostic Settings → Log Analytics, immutable audit logs |
+| Config Management | CM-6, CM-7 | Azure Policy, OPA Gatekeeper, node auto-upgrade |
+| Identification & Auth | IA-2, IA-4, IA-5 | MFA enforced via Entra ID CA, workload identity |
+| System & Comm Protection | SC-7, SC-8, SC-28 | Private cluster, Azure CNI + network policy, encryption at host |
+| System Integrity | SI-2, SI-3 | Defender for Containers, CVE scanning, NodeImage upgrade channel |
+
+---
+
+## Common Pitfalls I've Seen in IL4 AKS Deployments
+
+**1. Forgetting to disable public FQDN after enabling private cluster**
+The `--enable-private-cluster` flag alone doesn't disable the public DNS record. You must explicitly call `az aks update --disable-public-fqdn` or set it in Bicep via `enablePrivateCluster: true` AND `privateDNSZone: 'system'` with `disableRunCommand: true`.
+
+**2. Using kubenet instead of Azure CNI**
+Kubenet does not support Azure Network Policy. Without network policy, you cannot enforce pod-to-pod segmentation — a hard requirement for IL4 multi-tenant workloads.
+
+**3. Leaving local accounts enabled**
+Many teams enable local accounts for "break-glass" access and then forget to rotate or restrict it. Under IL4, `--disable-local-accounts` should be non-negotiable. Use Entra ID Privileged Identity Management (PIM) for emergency access instead.
+
+**4. Not scoping Defender for Containers to the subscription level**
+Enabling Defender only at the cluster level misses registry scanning and runtime threat detection for dynamically created namespaces. Enable it at the subscription in Defender for Cloud.
+
+**5. Missing the `cloudName` parameter in SecretProviderClass**
+This one has burned multiple engineers I've mentored. If you deploy the CSI driver without specifying `cloudName: "AzureUSGovernmentCloud"`, your pods will attempt to reach the commercial Key Vault endpoint and fail silently or timeout. Always explicit in sovereign clouds.

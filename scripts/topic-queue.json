@@ -21,5 +21,7 @@
     "supply-chain-security-sbom-azure-container-registry",
     "continuous-ato-monitoring-azure-defender-oscal"
   ],
-  "published": []
+  "published": [
+    "azure-gcc-high-aks-il4-deployment"
+  ]
 }
