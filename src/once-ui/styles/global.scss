@@ -3,6 +3,25 @@
     box-sizing: border-box;
 }
 
+/* REHYPE-PRETTY-CODE — ensure code text is visible */
+pre[data-theme] {
+    background: #1e1e1e !important;
+    padding: 1.25rem;
+    border-radius: 8px;
+    overflow-x: auto;
+}
+
+pre[data-theme] code {
+    font-family: var(--font-code, 'JetBrains Mono', monospace);
+    font-size: 13px;
+    line-height: 1.6;
+    color: #d4d4d4;
+}
+
+[data-highlighted-line] {
+    background: rgba(255, 255, 255, 0.1);
+}
+
 ul, ol {
     margin: 0;
     padding: 0 0 0 var(--static-space-12);
