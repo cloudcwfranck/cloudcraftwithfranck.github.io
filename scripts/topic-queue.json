@@ -22,6 +22,7 @@
     "continuous-ato-monitoring-azure-defender-oscal"
   ],
   "published": [
-    "azure-gcc-high-aks-il4-deployment"
+    "azure-gcc-high-aks-il4-deployment",
+    "fedramp-ato-automation-bicep-oscal"
   ]
 }
