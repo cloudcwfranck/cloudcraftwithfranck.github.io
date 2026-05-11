@@ -23,6 +23,7 @@
   ],
   "published": [
     "azure-gcc-high-aks-il4-deployment",
-    "fedramp-ato-automation-bicep-oscal"
+    "fedramp-ato-automation-bicep-oscal",
+    "platform-one-bigbang-chainguard-zero-cve-images"
   ]
 }
