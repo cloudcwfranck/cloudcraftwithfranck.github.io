@@ -25,6 +25,7 @@
     "azure-gcc-high-aks-il4-deployment",
     "fedramp-ato-automation-bicep-oscal",
     "platform-one-bigbang-chainguard-zero-cve-images",
-    "nist-800-53-rev5-policy-as-code-azure"
+    "nist-800-53-rev5-policy-as-code-azure",
+    "dod-il4-landing-zone-hub-spoke-architecture"
   ]
 }

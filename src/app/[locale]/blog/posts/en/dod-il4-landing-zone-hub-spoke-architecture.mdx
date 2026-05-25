@@ -1,0 +1,348 @@
+---
+title: "Dod Il4 Landing Zone Hub Spoke Architecture"
+publishedAt: "2026-05-25"
+summary: "A deep-dive into dod il4 landing zone hub spoke architecture for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Cloud"
+---
+
+## DoD IL4 Landing Zone Hub-Spoke Architecture on Azure Government
+
+If you're architecting cloud infrastructure for a DoD Impact Level 4 workload, you already know the stakes: ITAR data, CUI, strict network segmentation, and an ATO timeline that punishes architectural mistakes made early. The hub-spoke topology isn't just a best practice in this context — it's a compliance requirement wrapped in an architectural pattern. Let me walk you through exactly how I design, deploy, and harden a DoD IL4 landing zone using Azure Government (GCC High), following NIST SP 800-53 Rev 5 controls and the DoD Cloud Computing Security Requirements Guide (SRG).
+
+---
+
+## What Hub-Spoke Means in a DoD IL4 Context
+
+A hub-spoke architecture in Azure Government separates shared security services (the hub) from mission workloads (the spokes). The hub VNet hosts your Azure Firewall Premium, Azure Bastion, centralized DNS, and your connection back to on-prem via ExpressRoute or VPN. Spoke VNets are peered to the hub — never to each other — creating a forced-traffic-inspection model where all east-west and north-south traffic transits the firewall.
+
+For IL4, this matters because:
+
+- **SC-7 (Boundary Protection)** requires managed interfaces and traffic filtering at network boundaries
+- **AC-4 (Information Flow Enforcement)** demands that CUI never traverses uncontrolled paths
+- **SI-4 (System Monitoring)** requires centralized logging of all network flows
+- **CM-6 (Configuration Settings)** enforces hardened baselines across all compute resources
+
+The hub also becomes your centralized **Azure Policy** and **Microsoft Defender for Cloud** management point, which directly supports your continuous monitoring obligations under FedRAMP High and the DoD SRG IL4 baseline.
+
+---
+
+## Architecture Topology
+
+Here's the reference topology I use for IL4 deployments:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Management Group                          │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              DoD IL4 Root MG                         │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────────┐ │   │
+│  │  │ Platform MG│  │ Workload MG│  │  Identity MG   │ │   │
+│  │  └─────┬──────┘  └─────┬──────┘  └───────┬────────┘ │   │
+│  │        │               │                  │          │   │
+│  │  ┌─────▼──────┐  ┌─────▼──────┐           │          │   │
+│  │  │  Hub Sub   │  │ Spoke Sub  │           │          │   │
+│  │  │ (Shared Svc│  │ (Workload) │           │          │   │
+│  │  └────────────┘  └────────────┘           │          │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Each subscription maps to a separate Azure resource group boundary with its own RBAC, policy assignments, and diagnostic settings.
+
+---
+
+## Step 1: Management Group and Subscription Scaffold
+
+Before a single VNet is created, the management group hierarchy must be locked down. I provision this with Bicep using a management group deployment scope.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Authenticate to Azure Government
+az cloud set --name AzureUSGovernment
+az login
+
+# Create root management group for IL4
+az account management-group create \\
+  --name "dodil4-root" \\
+  --display-name "DoD IL4 Root"
+
+# Create child management groups
+az account management-group create \\
+  --name "dodil4-platform" \\
+  --display-name "Platform" \\
+  --parent "dodil4-root"
+
+az account management-group create \\
+  --name "dodil4-workloads" \\
+  --display-name "Workloads" \\
+  --parent "dodil4-root"
+
+az account management-group create \\
+  --name "dodil4-identity" \\
+  --display-name "Identity" \\
+  --parent "dodil4-root"
+
+# Move subscriptions into correct MGs
+az account management-group subscription add \\
+  --name "dodil4-platform" \\
+  --subscription "<hub-subscription-id>"
+
+az account management-group subscription add \\
+  --name "dodil4-workloads" \\
+  --subscription "<spoke-subscription-id>"`, label: "Management Group Scaffold", language: "bash" }]} copyButton />
+
+---
+
+## Step 2: Hub VNet Deployment with Azure Firewall Premium
+
+The hub is the crown jewel of your IL4 landing zone. I deploy Azure Firewall **Premium** SKU — not Standard — because IL4 requires TLS inspection and IDPS (Intrusion Detection and Prevention System), which are only available in Premium. This directly maps to **SI-3 (Malicious Code Protection)** and **SC-5 (Denial of Service Protection)**.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// hub-network.bicep
+targetScope = 'resourceGroup'
+
+param location string = 'usgovvirginia'
+param hubVnetAddressPrefix string = '10.0.0.0/16'
+param firewallSubnetPrefix string = '10.0.1.0/26'
+param bastionSubnetPrefix string = '10.0.2.0/27'
+param gatewaySubnetPrefix string = '10.0.3.0/27'
+param managementSubnetPrefix string = '10.0.4.0/28'
+
+// Hub Virtual Network
+resource hubVnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
+  name: 'vnet-hub-il4-usgva-001'
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [hubVnetAddressPrefix]
+    }
+    subnets: [
+      {
+        name: 'AzureFirewallSubnet'
+        properties: {
+          addressPrefix: firewallSubnetPrefix
+        }
+      }
+      {
+        name: 'AzureBastionSubnet'
+        properties: {
+          addressPrefix: bastionSubnetPrefix
+        }
+      }
+      {
+        name: 'GatewaySubnet'
+        properties: {
+          addressPrefix: gatewaySubnetPrefix
+        }
+      }
+      {
+        name: 'snet-management'
+        properties: {
+          addressPrefix: managementSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+    ]
+  }
+}
+
+// Azure Firewall Policy - Premium SKU for IL4 IDPS + TLS Inspection
+resource firewallPolicy 'Microsoft.Network/firewallPolicies@2023-04-01' = {
+  name: 'afwp-il4-usgva-001'
+  location: location
+  properties: {
+    sku: {
+      tier: 'Premium'
+    }
+    threatIntelMode: 'Deny'
+    intrusionDetection: {
+      mode: 'Deny'
+      configuration: {
+        signatureOverrides: []
+        bypassTrafficSettings: []
+      }
+    }
+    transportSecurity: {
+      certificateAuthority: {
+        name: 'il4-tls-ca'
+        keyVaultSecretId: 'https://<your-keyvault>.vault.usgovcloudapi.net/secrets/tls-ca-cert'
+      }
+    }
+    dnsSettings: {
+      enableProxy: true
+      servers: ['168.63.129.16']
+    }
+    insights: {
+      isEnabled: true
+      retentionDays: 90
+      logAnalyticsResources: {
+        defaultWorkspaceId: {
+          id: '/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.OperationalInsights/workspaces/<law-name>'
+        }
+      }
+    }
+  }
+}
+
+// Public IP for Firewall
+resource firewallPip 'Microsoft.Network/publicIPAddresses@2023-04-01' = {
+  name: 'pip-afw-il4-usgva-001'
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+// Azure Firewall - Premium
+resource azureFirewall 'Microsoft.Network/azureFirewalls@2023-04-01' = {
+  name: 'afw-il4-usgva-001'
+  location: location
+  properties: {
+    sku: {
+      name: 'AZFW_VNet'
+      tier: 'Premium'
+    }
+    firewallPolicy: {
+      id: firewallPolicy.id
+    }
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          subnet: {
+            id: '${hubVnet.id}/subnets/AzureFirewallSubnet'
+          }
+          publicIPAddress: {
+            id: firewallPip.id
+          }
+        }
+      }
+    ]
+  }
+}
+
+output hubVnetId string = hubVnet.id
+output firewallPrivateIp string = azureFirewall.properties.ipConfigurations[0].properties.privateIPAddress`, label: "Hub Network Bicep", language: "bicep" }]} copyButton />
+
+---
+
+## Step 3: Spoke VNet Peering with UDR Enforcement
+
+Every spoke must peer to the hub with **UseRemoteGateways** enabled and a User Defined Route (UDR) forcing all traffic through the Azure Firewall private IP. This is non-negotiable for IL4 — uncontrolled routing paths will sink your ATO.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Deploy spoke VNet and peer to hub
+# Variables
+HUB_VNET_ID="/subscriptions/<hub-sub-id>/resourceGroups/rg-hub-il4/providers/Microsoft.Network/virtualNetworks/vnet-hub-il4-usgva-001"
+FIREWALL_PRIVATE_IP="10.0.1.4"
+SPOKE_RG="rg-spoke-workload-il4"
+LOCATION="usgovvirginia"
+
+# Create Spoke VNet
+az network vnet create \\
+  --name vnet-spoke-workload-il4 \\
+  --resource-group $SPOKE_RG \\
+  --location $LOCATION \\
+  --address-prefixes 10.10.0.0/16
+
+# Create application subnet
+az network vnet subnet create \\
+  --name snet-app \\
+  --resource-group $SPOKE_RG \\
+  --vnet-name vnet-spoke-workload-il4 \\
+  --address-prefix 10.10.1.0/24
+
+# Create Route Table - Force traffic to hub firewall
+az network route-table create \\
+  --name rt-spoke-workload-il4 \\
+  --resource-group $SPOKE_RG \\
+  --location $LOCATION \\
+  --disable-bgp-route-propagation true
+
+# Default route to firewall (0.0.0.0/0)
+az network route-table route create \\
+  --name default-to-firewall \\
+  --resource-group $SPOKE_RG \\
+  --route-table-name rt-spoke-workload-il4 \\
+  --address-prefix 0.0.0.0/0 \\
+  --next-hop-type VirtualAppliance \\
+  --next-hop-ip-address $FIREWALL_PRIVATE_IP
+
+# Associate UDR with app subnet
+az network vnet subnet update \\
+  --name snet-app \\
+  --resource-group $SPOKE_RG \\
+  --vnet-name vnet-spoke-workload-il4 \\
+  --route-table rt-spoke-workload-il4
+
+# Peer spoke to hub
+SPOKE_VNET_ID=$(az network vnet show \\
+  --name vnet-spoke-workload-il4 \\
+  --resource-group $SPOKE_RG \\
+  --query id -o tsv)
+
+# Hub -> Spoke peering
+az network vnet peering create \\
+  --name hub-to-spoke-workload \\
+  --resource-group rg-hub-il4 \\
+  --vnet-name vnet-hub-il4-usgva-001 \\
+  --remote-vnet $SPOKE_VNET_ID \\
+  --allow-vnet-access \\
+  --allow-forwarded-traffic \\
+  --allow-gateway-transit
+
+# Spoke -> Hub peering (UseRemoteGateways for ExpressRoute/VPN)
+az network vnet peering create \\
+  --name spoke-workload-to-hub \\
+  --resource-group $SPOKE_RG \\
+  --vnet-name vnet-spoke-workload-il4 \\
+  --remote-vnet $HUB_VNET_ID \\
+  --allow-vnet-access \\
+  --allow-forwarded-traffic \\
+  --use-remote-gateways`, label: "Spoke Peering and UDR", language: "bash" }]} copyButton />
+
+---
+
+## Step 4: Azure Policy Assignments for IL4 Compliance
+
+Policy-as-code is your enforcement layer. I assign the **DoD IL4** built-in initiative (or the closest proxy, NIST SP 800-53 Rev 5 initiative) at the management group level. This ensures every subscription inherits the baseline.
+
+Key policies I enforce at the MG level:
+
+| Policy | NIST Control | Effect |
+|---|---|---|
+| Require Azure Firewall on VNets | SC-7 | Audit/Deny |
+| Deny public IP on NICs | SC-7(3) | Deny |
+| Require CMK on storage accounts | SC-28 | Deny |
+| Require HTTPS-only on Storage | SC-8 | Deny |
+| Enforce diagnostic settings to Log Analytics | AU-2, AU-9 | DeployIfNotExists |
+| Deny RDP/SSH from internet | AC-17 | Deny |
+
+```powershell
+# PowerShell - Assign NIST 800-53 Rev 5 initiative at MG scope
+Connect-AzAccount -Environment AzureUSGovernment
+
+$mgId = "dodil4-root"
+$initiativeId = "/providers/Microsoft.Authorization/policySetDefinitions/179d1daa-458f-4e47-8086-2a68d0d6c38f"
+
+# Get or create Log Analytics workspace resource ID for diagnostic settings
+$lawId = "/subscriptions/<sub-id>/resourceGroups/rg-hub-il4/providers/Microsoft.OperationalInsights/workspaces/law-il4-usgva-001"
+
+New-AzPolicyAssignment `
+  -Name "nist-80053-r5-il4-root" `
+  -DisplayName "NIST SP 800-53 Rev 5 - DoD IL4 Root" `
+  -PolicySetDefinition (Get-AzPolicySetDefinition -Id $initiativeId) `
+  -Scope "/providers/Microsoft.Management/managementGroups/$mgId" `
+  -PolicyParameterObject @{
+    "logAnalyticsWorkspaceIdForVMAgents" = @{ "value" = $lawId }
+  } `
+  -IdentityType "SystemAssigned" `
+  -Location "usgovvirginia"
+```
+
+---
+
+## Step 5: Centralized Logging with Sentinel and KQL Threat Detection
+
+All network flows, firewall logs, and Defender alerts must be centralized into a single Log Analytics Workspace in the hub. For IL4, log retention must be **90 days online, 1 year archive** per NIST AU-11.
+
+<CodeBlock className
