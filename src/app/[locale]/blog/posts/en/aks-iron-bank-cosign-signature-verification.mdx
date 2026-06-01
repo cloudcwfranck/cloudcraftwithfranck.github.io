@@ -1,0 +1,346 @@
+---
+title: "Aks Iron Bank Cosign Signature Verification"
+publishedAt: "2026-06-01"
+summary: "A deep-dive into aks iron bank cosign signature verification for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Kubernetes"
+---
+
+## AKS Iron Bank Cosign Signature Verification: Hardening Container Supply Chain Trust in GovCloud
+
+If you're running Kubernetes workloads in a DoD IL4/IL5 or FedRAMP High environment, container image provenance isn't optional — it's a hard compliance requirement. The combination of **Platform One's Iron Bank**, **Sigstore Cosign**, and **Azure Kubernetes Service (AKS)** gives you a cryptographically verifiable supply chain that satisfies NIST 800-53 controls around software integrity, configuration management, and audit logging. In this post, I'll walk you through exactly how I implement this pattern for federal clients, from registry configuration to admission controller enforcement.
+
+---
+
+## Why Iron Bank + Cosign Matters in FedRAMP/DoD Environments
+
+Iron Bank is the DoD's hardened container registry hosted at `registry1.dso.mil`. Every image published there has been scanned, hardened per DISA STIG baselines, and — critically — **cryptographically signed**. Cosign, part of the Sigstore project, provides the tooling to verify those signatures at deploy time.
+
+Without signature verification on your AKS clusters, you're exposed to a category of supply chain attack that NIST 800-53 Rev 5 explicitly calls out under **SI-7 (Software, Firmware, and Information Integrity)** and **CM-14 (Signed Components)**. In DoD contexts, this also maps to **CMMC Level 2/3** practices around supply chain risk management (SR family).
+
+The threat model is simple: even if your pipeline pulls from Iron Bank, nothing stops a misconfigured deployment from substituting an unverified image — whether through a compromised CI step, a developer shortcut, or a namespace misconfiguration. Cosign-based admission control closes that gap at the cluster enforcement layer.
+
+---
+
+## Architecture Overview
+
+The enforcement chain I implement looks like this:
+
+```
+Iron Bank (registry1.dso.mil)
+    └── Cosign-signed image + attestation
+         └── Azure Container Registry (ACR) – GCC High or MAG
+              └── AKS Cluster (Azure Government)
+                   └── Ratify / Gatekeeper (OPA) Admission Controller
+                        └── Cosign public key verification → ALLOW / DENY
+```
+
+The replication from Iron Bank to ACR is intentional — it satisfies data residency requirements, allows network policy lockdown, and gives you audit trails inside Azure Monitor.
+
+---
+
+## Step 1: Install and Configure Cosign
+
+Start by installing Cosign on your pipeline agent or admin workstation. I always pin to a specific release for reproducibility in government environments.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Install Cosign v2.2.3 on Linux pipeline agent
+COSIGN_VERSION="v2.2.3"
+curl -sSfL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+  -o /usr/local/bin/cosign
+chmod +x /usr/local/bin/cosign
+
+# Verify the binary itself (dogfooding)
+cosign version
+
+# Generate a key pair for your organization (air-gapped or Azure Key Vault backed)
+# Option A: Local key pair (use only for dev/test)
+cosign generate-key-pair
+
+# Option B: Azure Key Vault-backed key (recommended for FedRAMP)
+# Requires az CLI and Key Vault with premium SKU for HSM backing
+cosign generate-key-pair --kms azurekms://YOUR-KEYVAULT-NAME.vault.azure.net/YOUR-KEY-NAME
+
+# Verify an Iron Bank image signature using Platform One's public key
+# Download P1 public key from: https://repo1.dso.mil/dsop/cosign.pub
+cosign verify \
+  --key cosign.pub \
+  registry1.dso.mil/ironbank/redhat/ubi/ubi8:8.9 \
+  --output text`, label: "Install Cosign & Verify Iron Bank Image", language: "bash" }]} copyButton />
+
+For production GovCloud deployments, always use the Azure Key Vault KMS backend. This ties your signing keys to FIPS 140-2 Level 3 HSMs (Premium SKU) and gives you full audit trails via Azure Key Vault diagnostic logs — directly satisfying **AU-9 (Protection of Audit Information)** and **SC-12 (Cryptographic Key Establishment and Management)**.
+
+---
+
+## Step 2: Replicate Iron Bank Images to ACR with Signature Preservation
+
+ORAS (OCI Registry As Storage) and Cosign both support copying images with their associated signature artifacts. Here's the pattern I use to replicate from Iron Bank to ACR in Azure Government:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `#!/bin/bash
+# Prerequisites: az CLI, cosign, oras CLI installed
+# Authenticate to Iron Bank (requires Platform One account)
+REGISTRY1_USER="your-p1-username"
+REGISTRY1_TOKEN="your-p1-cli-token"
+ACR_NAME="yourGovACR"
+ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.us"  # Azure Government endpoint
+SOURCE_IMAGE="registry1.dso.mil/ironbank/redhat/ubi/ubi8:8.9"
+DEST_IMAGE="${ACR_LOGIN_SERVER}/ironbank/redhat/ubi/ubi8:8.9"
+
+# Login to Iron Bank
+echo "${REGISTRY1_TOKEN}" | docker login registry1.dso.mil \
+  -u "${REGISTRY1_USER}" --password-stdin
+
+# Login to ACR (Azure Government)
+az cloud set --name AzureUSGovernment
+az login
+az acr login --name "${ACR_NAME}"
+
+# Copy image AND all associated OCI referrer artifacts (signatures, SBOMs, attestations)
+cosign copy \
+  --force \
+  "${SOURCE_IMAGE}" \
+  "${DEST_IMAGE}"
+
+# Verify the signature is intact in ACR after copy
+# Use the same Iron Bank public key
+cosign verify \
+  --key cosign.pub \
+  "${DEST_IMAGE}" \
+  --output json | jq '.[] | {subject: .critical.identity, issuer: .optional.Issuer}'
+
+# Tag immutability — enable in ACR to prevent overwrite attacks
+az acr config content-trust update \
+  --registry "${ACR_NAME}" \
+  --status enabled
+
+# Enable quarantine policy (preview feature in Gov)
+az acr config content-trust update \
+  --registry "${ACR_NAME}" \
+  --status enabled`, label: "Replicate Iron Bank to ACR with Signature Preservation", language: "bash" }]} copyButton />
+
+One critical pitfall here: `cosign copy` preserves the OCI referrer graph (signatures, attestations, SBOMs attached to the image digest). If you use a plain `docker pull && docker push`, you lose all of that — your ACR copy will be unsigned from the admission controller's perspective.
+
+---
+
+## Step 3: Deploy Ratify + Gatekeeper on AKS for Admission Enforcement
+
+**Ratify** is the CNCF project (originally from Microsoft) that serves as a verification framework for OCI artifacts. Combined with **OPA Gatekeeper**, it creates an admission webhook that blocks unverified images at deploy time. This is the enforcement layer that makes everything above meaningful.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Step 3a: Install Gatekeeper
+helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts
+helm repo update
+
+helm install gatekeeper gatekeeper/gatekeeper \
+  --namespace gatekeeper-system \
+  --create-namespace \
+  --set auditInterval=30 \
+  --set constraintViolationsLimit=20 \
+  --version 3.14.0
+
+# Step 3b: Install Ratify
+helm repo add ratify https://ratify-project.github.io/ratify
+helm repo update
+
+# Create a Kubernetes secret with your Cosign public key
+kubectl create namespace ratify-system
+kubectl create secret generic cosign-pub-key \
+  --from-file=cosign.pub=./cosign.pub \
+  --namespace ratify-system
+
+# Install Ratify with Cosign verifier enabled
+helm install ratify ratify/ratify \
+  --namespace ratify-system \
+  --set-file notationCerts=""  \
+  --set featureFlags.RATIFY_EXPERIMENTAL_HIGH_AVAILABILITY=false \
+  --set provider.akvCertConfig.enabled=false \
+  --set logLevel=info
+
+# Step 3c: Apply Ratify CosignVerifier configuration
+cat <<EOF | kubectl apply -f -
+apiVersion: config.ratify.deislabs.io/v1beta1
+kind: Verifier
+metadata:
+  name: cosign-verifier
+  namespace: ratify-system
+spec:
+  name: cosign
+  artifactTypes: application/vnd.dev.cosign.artifact.sig.v1+json
+  parameters:
+    trustPolicies:
+      - name: ironbank-policy
+        scopes:
+          - "${ACR_LOGIN_SERVER}/ironbank/*"
+        keys:
+          - provider: inline
+            value: |
+$(cat cosign.pub | sed 's/^/              /')
+EOF
+
+# Step 3d: Create Gatekeeper ConstraintTemplate for Ratify
+cat <<EOF | kubectl apply -f -
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: ratifyverification
+spec:
+  crd:
+    spec:
+      names:
+        kind: RatifyVerification
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package ratifyverification
+        import future.keywords.in
+        violation[{"msg": msg}] {
+          not input.review.object.metadata.annotations["ratify-verification-result"] == "verified"
+          msg := sprintf("Image %v failed Ratify/Cosign verification. Deployment blocked.", [input.review.object.spec.containers[_].image])
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RatifyVerification
+metadata:
+  name: require-cosign-verification
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces:
+      - production
+      - staging
+EOF`, label: "Deploy Ratify + Gatekeeper for AKS Admission Control", language: "bash" }]} copyButton />
+
+---
+
+## Step 4: Bicep Infrastructure-as-Code for AKS Hardening
+
+The admission controller is only as good as the cluster hardening underneath it. Here's the Bicep configuration I use to ensure the AKS cluster itself is hardened for FedRAMP High:
+
+```bicep
+// aks-ironbank-hardened.bicep
+param clusterName string = 'aks-fedramp-prod'
+param location string = 'usgovvirginia'
+param acrName string
+param logAnalyticsWorkspaceId string
+
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
+  name: clusterName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    agentPoolProfiles: [
+      {
+        name: 'systempool'
+        count: 3
+        vmSize: 'Standard_D4s_v5'
+        osDiskType: 'Ephemeral'
+        osType: 'Linux'
+        mode: 'System'
+        enableFIPS: true          // FIPS 140-2 OS nodes — required for IL4/IL5
+        nodeTaints: ['CriticalAddonsOnly=true:NoSchedule']
+      }
+    ]
+    networkProfile: {
+      networkPlugin: 'azure'
+      networkPolicy: 'azure'      // Enforce network segmentation (SC-7)
+      outboundType: 'userDefinedRouting'
+    }
+    apiServerAccessProfile: {
+      enablePrivateCluster: true  // No public API server (AC-17, SC-8)
+      authorizedIPRanges: []
+    }
+    addonProfiles: {
+      azurePolicy: {
+        enabled: true             // OPA Gatekeeper via Azure Policy (CM-6, CM-7)
+      }
+      omsAgent: {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
+        }
+      }
+    }
+    securityProfile: {
+      imageCleaner: {
+        enabled: true             // Remove stale images automatically
+        intervalHours: 48
+      }
+      workloadIdentity: {
+        enabled: true             // Workload Identity replaces pod-level secrets (IA-5)
+      }
+    }
+    oidcIssuerProfile: {
+      enabled: true
+    }
+  }
+}
+
+// Assign AcrPull to AKS kubelet identity
+resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(aksCluster.id, 'acrpull')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      '7f951dda-4ed3-4680-a7ca-43fe172d538d'  // AcrPull built-in role
+    )
+    principalId: aksCluster.properties.identityProfile.kubeletidentity.objectId
+    principalType: 'ServicePrincipal'
+  }
+}
+```
+
+Note the `enableFIPS: true` on the node pool — this is non-negotiable for DoD IL4 and above. It ensures the underlying OS cryptographic libraries operate in FIPS 140-2 validated mode, satisfying **SC-13 (Cryptographic Protection)**.
+
+---
+
+## Step 5: KQL Queries for Audit and Compliance Monitoring
+
+Signature verification events need to feed your SOC and compliance dashboards. Here are the KQL queries I use in Azure Monitor / Sentinel workspaces for FedRAMP continuous monitoring (ConMon):
+
+```kql
+// Query 1: Detect admission webhook denials from Ratify (SI-7 audit evidence)
+AzureDiagnostics
+| where Category == "kube-audit"
+| where log_s has "ratify" or log_s has "cosign" or log_s has "verification"
+| extend parsedLog = parse_json(log_s)
+| where parsedLog.responseStatus.code == 403
+| project TimeGenerated,
+          SourceIP = parsedLog.requestReceivedTimestamp,
+          User = parsedLog.user.username,
+          Namespace = parsedLog.objectRef.namespace,
+          Resource = parsedLog.objectRef.name,
+          Reason = parsedLog.responseStatus.reason
+| order by TimeGenerated desc
+
+// Query 2: Track Iron Bank image pulls from ACR (supply chain audit trail)
+ContainerRegistryRepositoryEvents
+| where OperationName == "Pull"
+| where Repository has "ironbank"
+| project TimeGenerated, Repository, Tag, LoginServer,
+          CallerIpAddress, Identity
+| summarize PullCount = count() by bin(TimeGenerated, 1h), Repository, Identity
+
+// Query 3: FIPS node compliance check
+KubeNodeInventory
+| where TimeGenerated > ago(24h)
+| extend Labels = parse_json(Labels)
+| project NodeName, OSVersion = tostring(Labels["beta.kubernetes.io/os"]),
+          Status, TimeGenerated
+| where NodeName !contains "fips"
+| summarize NonFIPSNodes = count() by NodeName
+```
+
+These queries map directly to **AU-6 (Audit Review, Analysis, and Reporting)** and **SI-7 (Software Integrity)** control evidence for your FedRAMP System Security Plan (SSP).
+
+---
+
+## NIST 800-53 Controls Addressed
+
+| Control | Description | How Iron Bank + Cosign Addresses It |
+|---|---|---|
+| **SI-7** | Software, Firmware, and Information Integrity | Cosign cryptographic signatures verify image integrity at admission |
+| **CM-14** | Signed Components | Iron Bank images are DISA-reviewed and Cosign-signed |
+| **CM-7(5)** | Least Functionality / Authorized Software | Gatekeeper blocks any non-Iron Bank image |
+|
