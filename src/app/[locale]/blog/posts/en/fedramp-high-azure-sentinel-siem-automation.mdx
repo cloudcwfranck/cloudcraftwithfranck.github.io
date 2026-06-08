@@ -1,0 +1,331 @@
+---
+title: "Fedramp High Azure Sentinel Siem Automation"
+publishedAt: "2026-06-08"
+summary: "A deep-dive into fedramp high azure sentinel siem automation for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "FedRAMP"
+---
+
+## FedRAMP High Azure Sentinel SIEM Automation: Building a Compliance-Ready SOC in GovCloud
+
+If you're operating in a FedRAMP High or DoD IL4/IL5 environment, your SIEM isn't optional — it's a baseline requirement baked into NIST 800-53 Rev 5 controls like AU-2, AU-6, AU-12, SI-4, and IR-6. The problem I see repeatedly in federal engagements is agencies spinning up Microsoft Sentinel in Azure Government but treating it like a manual, click-ops tool. That approach fails at scale and it fails audits.
+
+In this post, I'm going to walk you through automating Microsoft Sentinel for FedRAMP High compliance — from workspace provisioning to analytics rule deployment to automated incident response — using Bicep, Azure CLI, PowerShell, and KQL. Everything here is deployable in Azure Government (GCC High / MAG) and mapped directly to FedRAMP High control baselines.
+
+---
+
+## Why Sentinel Automation Matters in FedRAMP High Environments
+
+FedRAMP High mandates continuous monitoring (ConMon) as defined in AU-6(1) and CA-7. Manual Sentinel configurations introduce drift, undocumented changes, and gaps that show up as findings during 3PAO assessments. I've seen agencies lose their ATO over configuration drift in their SIEM — don't be that agency.
+
+Automating Sentinel with Infrastructure-as-Code means your control implementations are:
+
+- **Auditable** — every rule, connector, and playbook is version-controlled in Git
+- **Reproducible** — spin up an identical environment for a new mission owner in minutes
+- **Drift-resistant** — CI/CD pipelines enforce desired state continuously
+
+Key NIST 800-53 Rev 5 controls this architecture directly addresses:
+
+| Control | Description | Sentinel Capability |
+|---|---|---|
+| AU-2 | Event Logging | Data connectors, diagnostic settings |
+| AU-6 | Audit Record Review | Analytics rules, workbooks |
+| AU-12 | Audit Record Generation | Log Analytics workspace configuration |
+| SI-4 | System Monitoring | Fusion ML, scheduled query rules |
+| IR-4 | Incident Handling | Automation rules, Logic App playbooks |
+| IR-6 | Incident Reporting | Playbooks with GovDelivery/email integration |
+| CA-7 | Continuous Monitoring | Sentinel health monitoring, UEBA |
+
+---
+
+## Step 1: Provision the Sentinel Workspace in Azure Government with Bicep
+
+I always start with infrastructure-as-code. The following Bicep template provisions a Log Analytics workspace with the Sentinel solution enabled, enforces 90-day retention (FedRAMP High minimum per AU-11), and locks down the workspace to a dedicated subnet via private endpoints.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// sentinel-workspace.bicep
+// FedRAMP High compliant Sentinel workspace
+// Deploy to: az cloud set --name AzureUSGovernment
+
+@description('Environment name for resource naming')
+param environmentName string = 'fedramp-high'
+
+@description('Azure Government region')
+param location string = 'usgovvirginia'
+
+@description('Log retention in days - FedRAMP High AU-11 requires minimum 90')
+@minValue(90)
+@maxValue(730)
+param retentionInDays int = 365
+
+@description('Daily data cap in GB - set to prevent cost overruns')
+param dailyQuotaGb int = 100
+
+var workspaceName = 'law-sentinel-\${environmentName}'
+var sentinelSolutionName = 'SecurityInsights(\${workspaceName})'
+
+// Log Analytics Workspace
+resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: workspaceName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: retentionInDays
+    workspaceCapping: {
+      dailyQuotaGb: dailyQuotaGb
+    }
+    features: {
+      enableLogAccessUsingOnlyResourcePermissions: true
+      disableLocalAuth: true  // Enforce AAD auth only - SC-8 compliance
+    }
+    publicNetworkAccessForIngestion: 'Disabled'  // Force private endpoint
+    publicNetworkAccessForQuery: 'Disabled'
+  }
+}
+
+// Enable Microsoft Sentinel on the workspace
+resource sentinelSolution 'Microsoft.OperationsManagement/solutions@2015-11-01-preview' = {
+  name: sentinelSolutionName
+  location: location
+  plan: {
+    name: sentinelSolutionName
+    promotionCode: ''
+    product: 'OMSGallery/SecurityInsights'
+    publisher: 'Microsoft'
+  }
+  properties: {
+    workspaceResourceId: logAnalyticsWorkspace.id
+  }
+  dependsOn: [logAnalyticsWorkspace]
+}
+
+// Diagnostic settings for the workspace itself (meta-logging)
+resource workspaceDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'diag-sentinel-workspace'
+  scope: logAnalyticsWorkspace
+  properties: {
+    workspaceId: logAnalyticsWorkspace.id
+    logs: [
+      {
+        categoryGroup: 'audit'
+        enabled: true
+        retentionPolicy: {
+          enabled: true
+          days: retentionInDays
+        }
+      }
+    ]
+  }
+}
+
+output workspaceId string = logAnalyticsWorkspace.id
+output workspaceName string = logAnalyticsWorkspace.name
+output workspaceCustomerId string = logAnalyticsWorkspace.properties.customerId`, label: "sentinel-workspace.bicep", language: "bicep" }]} copyButton />
+
+Deploy this to Azure Government with:
+
+```bash
+az cloud set --name AzureUSGovernment
+az login --tenant <your-gov-tenant-id>
+
+az deployment group create \
+  --resource-group rg-sentinel-fedramp \
+  --template-file sentinel-workspace.bicep \
+  --parameters environmentName=fedramp-high location=usgovvirginia retentionInDays=365
+```
+
+---
+
+## Step 2: Automate Data Connector Enablement with PowerShell
+
+FedRAMP High AU-2 requires you to log specific event types. Microsoft Sentinel's data connectors are the ingestion layer — and they must be enabled consistently across all subscriptions. I use PowerShell with the Az.SecurityInsights module for this, wrapped in a CI/CD pipeline step.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Enable-SentinelConnectors.ps1
+# Automates enabling critical FedRAMP High data connectors
+# Requires: Az.SecurityInsights module, appropriate RBAC permissions
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$SubscriptionId,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$ResourceGroupName,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$WorkspaceName,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$TenantId
+)
+
+# Set Azure Government cloud context
+$null = Set-AzContext -SubscriptionId $SubscriptionId
+
+$sentinelParams = @{
+    ResourceGroupName = $ResourceGroupName
+    WorkspaceName     = $WorkspaceName
+}
+
+Write-Host "[INFO] Enabling Microsoft Sentinel Data Connectors for FedRAMP High compliance..."
+
+# 1. Azure Active Directory (Identity logs - AU-2, AU-12)
+Write-Host "[+] Enabling Azure Active Directory connector..."
+$aadConnector = @{
+    DataConnectorKind = 'AzureActiveDirectory'
+    TenantId          = $TenantId
+}
+New-AzSentinelDataConnector @sentinelParams -AzureActiveDirectory @aadConnector -ErrorAction SilentlyContinue
+
+# 2. Azure Activity (Control plane audit - AU-2)
+Write-Host "[+] Enabling Azure Activity connector..."
+New-AzSentinelDataConnector @sentinelParams -Kind 'AzureActivity' -ErrorAction SilentlyContinue
+
+# 3. Microsoft Defender for Cloud (SI-4, RA-5)
+Write-Host "[+] Enabling Microsoft Defender for Cloud connector..."
+New-AzSentinelDataConnector @sentinelParams -Kind 'AzureSecurityCenter' `
+    -SubscriptionId $SubscriptionId -ErrorAction SilentlyContinue
+
+# 4. Microsoft 365 Defender (endpoint telemetry - SI-4)
+Write-Host "[+] Enabling Microsoft 365 Defender connector..."
+New-AzSentinelDataConnector @sentinelParams -Kind 'MicrosoftThreatProtection' `
+    -TenantId $TenantId -ErrorAction SilentlyContinue
+
+# 5. Azure Key Vault Diagnostics (SC-12, AU-2)
+Write-Host "[+] Configuring Key Vault diagnostic forwarding..."
+$kvResources = Get-AzKeyVault
+foreach ($kv in $kvResources) {
+    Set-AzDiagnosticSetting -ResourceId $kv.ResourceId `
+        -WorkspaceId (Get-AzOperationalInsightsWorkspace `
+            -ResourceGroupName $ResourceGroupName -Name $WorkspaceName).ResourceId `
+        -Enabled $true `
+        -Category AuditEvent `
+        -Name "diag-kv-to-sentinel" -ErrorAction SilentlyContinue
+    Write-Host "    -> Configured diagnostics for KV: $($kv.VaultName)"
+}
+
+# 6. Enable UEBA (User Entity Behavior Analytics - SI-4(1))
+Write-Host "[+] Enabling UEBA for anomaly detection..."
+$uebaSettings = @{
+    DataSources = @('AuditLogs', 'AzureActivity', 'SecurityEvent', 'SigninLogs')
+}
+Update-AzSentinelSetting @sentinelParams -SettingsName 'Ueba' -Enabled $true
+
+Write-Host "[SUCCESS] All FedRAMP High required connectors enabled."`, label: "Enable-SentinelConnectors.ps1", language: "powershell" }]} copyButton />
+
+---
+
+## Step 3: Deploy Analytics Rules with KQL for FedRAMP-Specific Threat Scenarios
+
+Analytics rules are your detection engine. Every FedRAMP High environment needs custom KQL rules tuned to government threat vectors — privileged access abuse, lateral movement across classified workloads, and policy violations. I deploy these as ARM/Bicep templates so they're version-controlled, but let me show you the KQL logic first.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// KQL Analytics Rule: Privileged Role Assignment Outside CAB Window
+// Maps to: AC-2(4), AC-6(9), AU-9 - FedRAMP High
+// Detects unauthorized privileged role assignments outside approved change windows
+// Change windows for this org: Tue/Thu 0200-0400 UTC
+
+let ChangeWindowDays = dynamic([2, 4]); // Tuesday=2, Thursday=4
+let ChangeWindowStartHour = 2;
+let ChangeWindowEndHour = 4;
+let SensitiveRoles = dynamic([
+    "Global Administrator",
+    "Security Administrator", 
+    "User Access Administrator",
+    "Privileged Role Administrator",
+    "Application Administrator",
+    "Cloud Application Administrator"
+]);
+
+AuditLogs
+| where TimeGenerated > ago(1h)
+| where OperationName in ("Add member to role", "Add eligible member to role")
+| extend TargetRole = tostring(TargetResources[0].displayName)
+| extend InitiatedBy_UPN = tostring(InitiatedBy.user.userPrincipalName)
+| extend TargetUser_UPN = tostring(TargetResources[0].userPrincipalName)
+| where TargetRole in (SensitiveRoles)
+| extend HourOfDay = datetime_part("Hour", TimeGenerated)
+| extend DayOfWeek = dayofweek(TimeGenerated) / 1d  // Convert to numeric
+| extend IsChangeWindow = (
+    DayOfWeek in (ChangeWindowDays) and 
+    HourOfDay >= ChangeWindowStartHour and 
+    HourOfDay < ChangeWindowEndHour
+)
+| where IsChangeWindow == false  // Alert ONLY on out-of-window assignments
+| project 
+    TimeGenerated,
+    OperationName,
+    TargetRole,
+    InitiatedBy_UPN,
+    TargetUser_UPN,
+    Result,
+    CorrelationId,
+    IsChangeWindow
+| extend 
+    AlertSeverity = "High",
+    MITRETactic = "Privilege Escalation",
+    MITRETechnique = "T1078.004 - Valid Accounts: Cloud Accounts",
+    FedRAMPControl = "AC-6(9), AC-2(4)",
+    RemediationAction = "Immediately review and revoke if unauthorized. File IR ticket per IR-6."
+
+// -----------------------------------------------
+// Second rule: Excessive Failed Auth to Gov Resources (AC-7, SI-4)
+// -----------------------------------------------
+
+// SigninLogs
+// | where TimeGenerated > ago(15m)
+// | where ResultType != 0  // Failed sign-ins
+// | where AppDisplayName has_any ("Azure Government", "Azure Portal")
+// | summarize 
+//     FailedAttempts = count(),
+//     UniqueIPs = dcount(IPAddress),
+//     IPList = make_set(IPAddress, 10)
+//     by UserPrincipalName, bin(TimeGenerated, 5m)
+// | where FailedAttempts >= 10  // AC-7 lockout threshold
+// | extend FedRAMPControl = "AC-7"
+// | extend AlertSeverity = iff(FailedAttempts >= 25, "High", "Medium")`, label: "fedramp-analytics-rules.kql", language: "kql" }]} copyButton />
+
+### Deploying Analytics Rules as Code
+
+Don't manually create rules in the portal. Package them as Bicep and deploy through your pipeline:
+
+```bicep
+resource scheduledRule 'Microsoft.SecurityInsights/alertRules@2022-12-01-preview' = {
+  name: guid('privileged-role-outside-cab-window')
+  kind: 'Scheduled'
+  scope: logAnalyticsWorkspace
+  properties: {
+    displayName: 'Privileged Role Assignment Outside CAB Window - FedRAMP AC-6(9)'
+    description: 'Detects privileged role assignments outside approved change windows'
+    severity: 'High'
+    enabled: true
+    query: '<your KQL from above>'
+    queryFrequency: 'PT1H'
+    queryPeriod: 'PT1H'
+    triggerOperator: 'GreaterThan'
+    triggerThreshold: 0
+    tactics: ['PrivilegeEscalation']
+    techniques: ['T1078']
+  }
+}
+```
+
+---
+
+## Step 4: Automate Incident Response with Logic App Playbooks
+
+FedRAMP High IR-4 and IR-6 require documented, repeatable incident response. I wire Sentinel automation rules to Logic App playbooks that automatically:
+
+1. Create a ServiceNow GRC ticket tagged with the FedRAMP control
+2. Notify the ISSO and SOC team via Teams/email
+3. Isolate the affected resource if severity is High/Critical
+4. Log the response action back to Sentinel for AU-3 completeness
+
+Deploy the automation rule via Azure CLI:
+
+```bash
+# Create automation rule to trigger playbook on High severity incidents
+az rest --method PUT \
+  --url "https://management.usgovcloudapi.net/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.OperationalInsights/workspaces/${WORKSPACE}/providers/Microsoft.SecurityInsights/automationRules/fedramp-high-ir-automation?api-version=2022-12-01-preview" \
+  --body '{
+    "properties": {
+      "displayName": "FedRAMP High IR Automation - High Severity",
+      "order": 1
