@@ -1,0 +1,313 @@
+---
+title: "Poam Automation Oscal Azure Devops Pipeline"
+publishedAt: "2026-06-15"
+summary: "A deep-dive into poam automation oscal azure devops pipeline for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Azure"
+---
+
+## Automating POA&M Generation with OSCAL and Azure DevOps Pipelines
+
+If you're operating in a FedRAMP High or DoD IL4/IL5 environment, you already know that the Plan of Action and Milestones (POA&M) is one of the most labor-intensive compliance artifacts you'll manage. It's a living document that tracks every open finding, remediation timeline, and responsible party — and it needs to stay synchronized with your continuous monitoring posture. Most teams are still managing this in Excel spreadsheets, which is a compliance liability and an operational nightmare.
+
+In this post, I'm going to walk you through how I architect a fully automated POA&M pipeline using OSCAL (Open Security Controls Assessment Language), Azure DevOps, and Microsoft Defender for Cloud — turning what used to be a quarterly manual process into a continuous, auditable, machine-readable compliance feed.
+
+---
+
+## Why OSCAL-Based POA&M Automation Matters
+
+OSCAL is the NIST-defined XML/JSON/YAML schema for expressing security documentation in a structured, machine-readable format. FedRAMP published its OSCAL templates in 2021 and has been pushing agencies and CSPs toward OSCAL-native submissions ever since. The FedRAMP Automation GitHub repository (`github.com/GSA/fedramp-automation`) contains the canonical OSCAL profiles and validation rules you need to comply with.
+
+When you combine OSCAL's `poam` document type with an Azure DevOps pipeline, you get:
+
+- **Automated ingestion** of findings from Defender for Cloud, Microsoft Sentinel, and Azure Policy
+- **Version-controlled POA&M artifacts** with full Git history and PR-based review workflows
+- **FedRAMP-valid OSCAL output** that can be submitted directly to your AO or uploaded to eMASS
+- **NIST 800-53 control traceability** baked into every finding record
+
+This directly addresses FedRAMP's continuous monitoring requirements under **CA-7 (Continuous Monitoring)**, **CA-5 (Plan of Action and Milestones)**, **RA-5 (Vulnerability Scanning)**, and **SI-2 (Flaw Remediation)**.
+
+---
+
+## Architecture Overview
+
+The pipeline I'm describing has four stages:
+
+1. **Ingest** — Pull findings from Defender for Cloud via Azure Resource Graph and export to JSON
+2. **Transform** — Map findings to OSCAL `poam` schema using a Python transformer
+3. **Validate** — Run FedRAMP OSCAL validation via the `fedramp-automation` Saxon-based rules engine
+4. **Publish** — Commit the validated OSCAL POA&M to a compliance artifact repository and notify stakeholders via Azure DevOps work items
+
+---
+
+## Step 1: Extract Findings from Defender for Cloud Using Azure Resource Graph
+
+I use Azure Resource Graph (ARG) because it lets me query security findings across subscriptions at scale. This is the foundation of the ingestion stage.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Query Defender for Cloud recommendations that are in an unhealthy state
+# Filter to findings relevant to FedRAMP High baseline controls
+az graph query -q "
+SecurityResources
+| where type == 'microsoft.security/assessments'
+| where properties.status.code == 'Unhealthy'
+| extend controlId = tostring(properties.metadata.policyDefinitionId),
+         severity = tostring(properties.metadata.severity),
+         resourceId = tostring(properties.resourceDetails.id),
+         displayName = tostring(properties.displayName),
+         remediationDescription = tostring(properties.metadata.remediationDescription),
+         firstObserved = tostring(properties.status.firstEvaluationDate)
+| where severity in ('High', 'Medium')
+| project controlId, severity, resourceId, displayName,
+          remediationDescription, firstObserved
+| order by severity asc
+" --subscriptions $SUBSCRIPTION_ID \
+  --output json > /tmp/defender_findings.json
+
+echo "Findings exported: $(cat /tmp/defender_findings.json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)[\"data\"]))')"`, label: "Ingest Defender Findings", language: "bash" }]} copyButton />
+
+This gives you a raw JSON payload of all unhealthy Defender for Cloud assessments. I typically schedule this as a nightly Azure DevOps pipeline run using a `cron` trigger on the `main` branch of my compliance repository.
+
+---
+
+## Step 2: Transform Findings to OSCAL POA&M Schema
+
+This is where the heavy lifting happens. OSCAL's POA&M schema requires specific fields: `poam-id`, `title`, `description`, `finding-id`, `risk`, `remediation`, and `milestones`. I maintain a Python transformer that maps Defender for Cloud severity and finding metadata to these fields.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `import json
+import uuid
+from datetime import datetime, timedelta
+
+# Load raw Defender findings
+with open("/tmp/defender_findings.json") as f:
+    raw = json.load(f)
+
+findings = raw["data"]
+
+# NIST 800-53 control mapping for common Defender assessments
+# Extend this dictionary with your environment-specific mappings
+CONTROL_MAP = {
+    "EnableMFAForAccountsWithWritePermissionsMonitoringRule": "IA-2",
+    "SystemUpdatesMonitoringRule": "SI-2",
+    "EndpointProtectionMonitoringRule": "SI-3",
+    "StorageAccountSecureTransferToBeEnabledMonitoringRule": "SC-8",
+    "KeyVaultDiagnosticLogsMonitoringRule": "AU-2",
+    "JitNetworkAccessMonitoringRule": "AC-17",
+}
+
+def compute_scheduled_completion(severity: str) -> str:
+    """FedRAMP milestones: High=30d, Medium=90d, Low=180d"""
+    days = {"High": 30, "Medium": 90, "Low": 180}.get(severity, 90)
+    return (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+poam_items = []
+for finding in findings:
+    control_id = finding.get("controlId", "")
+    short_key = control_id.split("/")[-1] if "/" in control_id else control_id
+    nist_control = CONTROL_MAP.get(short_key, "Unknown")
+
+    poam_items.append({
+        "uuid": str(uuid.uuid4()),
+        "poam-id": f"POAM-{str(uuid.uuid4())[:8].upper()}",
+        "title": finding.get("displayName", "Unnamed Finding"),
+        "description": finding.get("remediationDescription", "No description available."),
+        "related-findings": [{"finding-uuid": str(uuid.uuid4())}],
+        "risks": [{
+            "uuid": str(uuid.uuid4()),
+            "title": f"Risk: {finding.get('displayName', '')}",
+            "statement": f"Severity: {finding.get('severity', 'Unknown')}. "
+                         f"Affected resource: {finding.get('resourceId', 'Unknown')}",
+            "status": "open",
+            "mitigating-factors": [],
+            "deadline": compute_scheduled_completion(finding.get("severity", "Medium")),
+            "remediations": [{
+                "uuid": str(uuid.uuid4()),
+                "lifecycle": "planned",
+                "title": "Remediation Plan",
+                "description": finding.get("remediationDescription", "Remediation steps pending."),
+                "required-assets": [],
+                "milestones": [
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "title": "Initial Triage",
+                        "description": "Assign finding to responsible team and validate scope.",
+                        "due-date": (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d")
+                    },
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "title": "Remediation Complete",
+                        "description": "Apply remediation and verify resolution in Defender.",
+                        "due-date": compute_scheduled_completion(finding.get("severity", "Medium"))
+                    }
+                ]
+            }]
+        }],
+        "related-controls": [{"control-id": nist_control}],
+        "observations": [{"observation-uuid": str(uuid.uuid4())}]
+    })
+
+oscal_poam = {
+    "plan-of-action-and-milestones": {
+        "uuid": str(uuid.uuid4()),
+        "metadata": {
+            "title": "Azure GovCloud FedRAMP POA&M",
+            "last-modified": datetime.utcnow().isoformat() + "Z",
+            "version": datetime.utcnow().strftime("%Y%m%d"),
+            "oscal-version": "1.0.4",
+            "roles": [{"id": "prepared-by", "title": "Cloud Security Engineering"}],
+            "parties": [{"uuid": str(uuid.uuid4()), "type": "organization", "name": "Your Org Name"}]
+        },
+        "import-ssp": {"href": "./ssp.json"},
+        "poam-items": poam_items
+    }
+}
+
+with open("/tmp/poam.json", "w") as out:
+    json.dump(oscal_poam, out, indent=2)
+
+print(f"OSCAL POA&M generated with {len(poam_items)} items.")`, label: "OSCAL POA&M Transformer", language: "bash" }]} copyButton />
+
+One thing I want to call out here: the `CONTROL_MAP` dictionary is critical. Defender for Cloud uses its own internal policy definition IDs, and you need to map these to NIST 800-53 Rev 5 control identifiers for the OSCAL output to be valid against the FedRAMP OSCAL profile. I maintain this mapping as a separate JSON artifact versioned in the same repository.
+
+---
+
+## Step 3: Azure DevOps Pipeline Definition
+
+Here's the full pipeline YAML that orchestrates all four stages. I store this in the root of my compliance repository as `poam-pipeline.yml`.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - "**/*.md"
+
+schedules:
+  - cron: "0 6 * * *"
+    displayName: "Nightly POA&M Generation (UTC 06:00)"
+    branches:
+      include:
+        - main
+    always: true
+
+variables:
+  - group: fedramp-compliance-secrets
+  - name: PYTHON_VERSION
+    value: "3.11"
+  - name: OSCAL_VERSION
+    value: "1.0.4"
+  - name: ARTIFACT_DIR
+    value: "$(Build.ArtifactStagingDirectory)/poam"
+
+stages:
+  - stage: Ingest
+    displayName: "Ingest Defender Findings"
+    jobs:
+      - job: QueryARG
+        displayName: "Query Azure Resource Graph"
+        pool:
+          vmImage: "ubuntu-22.04"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Export Unhealthy Assessments"
+            inputs:
+              azureSubscription: "$(SERVICE_CONNECTION_NAME)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                mkdir -p $(ARTIFACT_DIR)
+                az graph query -q "
+                  SecurityResources
+                  | where type == 'microsoft.security/assessments'
+                  | where properties.status.code == 'Unhealthy'
+                  | extend severity = tostring(properties.metadata.severity),
+                           resourceId = tostring(properties.resourceDetails.id),
+                           displayName = tostring(properties.displayName),
+                           remediationDescription = tostring(properties.metadata.remediationDescription),
+                           controlId = tostring(properties.metadata.policyDefinitionId),
+                           firstObserved = tostring(properties.status.firstEvaluationDate)
+                  | where severity in ('High', 'Medium')
+                  | project controlId, severity, resourceId,
+                             displayName, remediationDescription, firstObserved
+                " --subscriptions $(SUBSCRIPTION_ID) \
+                  --output json > $(ARTIFACT_DIR)/defender_findings.json
+                COUNT=$(cat $(ARTIFACT_DIR)/defender_findings.json | \
+                  python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]))')
+                echo "##vso[task.setvariable variable=FINDING_COUNT;isOutput=true]$COUNT"
+                echo "Total findings: $COUNT"
+            name: argQuery
+
+  - stage: Transform
+    displayName: "Transform to OSCAL POA&M"
+    dependsOn: Ingest
+    jobs:
+      - job: GenerateOSCAL
+        displayName: "Generate OSCAL Document"
+        pool:
+          vmImage: "ubuntu-22.04"
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "$(PYTHON_VERSION)"
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifactName: "defender-findings"
+              targetPath: "$(ARTIFACT_DIR)"
+          - script: |
+              pip install jsonschema==4.21.1
+              cp scripts/transform_to_oscal.py $(ARTIFACT_DIR)/
+              python3 $(ARTIFACT_DIR)/transform_to_oscal.py \
+                --input $(ARTIFACT_DIR)/defender_findings.json \
+                --output $(ARTIFACT_DIR)/poam.json \
+                --control-map config/control_map.json
+            displayName: "Run OSCAL Transformer"
+
+  - stage: Validate
+    displayName: "Validate OSCAL Against FedRAMP Profile"
+    dependsOn: Transform
+    jobs:
+      - job: OSCALValidation
+        displayName: "FedRAMP OSCAL Schema Validation"
+        pool:
+          vmImage: "ubuntu-22.04"
+        steps:
+          - script: |
+              # Install oscal-cli from NIST (https://github.com/usnistgov/oscal-cli)
+              curl -sL https://github.com/usnistgov/oscal-cli/releases/download/v2.0.2/oscal-cli-enhanced-2.0.2-oscal-cli.zip \
+                -o oscal-cli.zip
+              unzip -q oscal-cli.zip -d oscal-cli
+              chmod +x oscal-cli/bin/oscal-cli
+              ./oscal-cli/bin/oscal-cli poam validate \
+                $(ARTIFACT_DIR)/poam.json \
+                --as=json 2>&1 | tee $(ARTIFACT_DIR)/validation_report.txt
+              if grep -q "INVALID" $(ARTIFACT_DIR)/validation_report.txt; then
+                echo "##vso[task.logissue type=error]OSCAL validation failed"
+                exit 1
+              fi
+            displayName: "Run oscal-cli Validation"
+
+  - stage: Publish
+    displayName: "Publish POA&M Artifact and Create Work Items"
+    dependsOn: Validate
+    jobs:
+      - job: PublishArtifacts
+        displayName: "Commit and Notify"
+        pool:
+          vmImage: "ubuntu-22.04"
+        steps:
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: "$(ARTIFACT_DIR)"
+              artifactName: "oscal-poam-$(Build.BuildId)"
+          - task: AzureCLI@2
+            displayName: "Create ADO Work Items for High Findings"
+            inputs:
+              azureSubscription: "$(SERVICE_CONNECTION_NAME)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                HIGH_FINDINGS=$(cat $(ARTIFACT_DIR)/defender_findings.json | \
+                  python3 -c "
+                import json, sys
+                data = json.load(sys.stdin)['data']
+                high = [f for f in data if f.get('severity') == 'High']
+                print(json.dumps(high))
