@@ -29,6 +29,7 @@
     "dod-il4-landing-zone-hub-spoke-architecture",
     "aks-iron-bank-cosign-signature-verification",
     "fedramp-high-azure-sentinel-siem-automation",
-    "poam-automation-oscal-azure-devops-pipeline"
+    "poam-automation-oscal-azure-devops-pipeline",
+    "cmmc-level-2-azure-compliance-bicep"
   ]
 }

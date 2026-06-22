@@ -1,0 +1,337 @@
+---
+title: "Cmmc Level 2 Azure Compliance Bicep"
+publishedAt: "2026-06-22"
+summary: "A deep-dive into cmmc level 2 azure compliance bicep for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Azure"
+---
+
+## CMMC Level 2 Azure Compliance Automation with Bicep
+
+If you're operating in a DoD environment handling Controlled Unclassified Information (CUI), CMMC Level 2 compliance is no longer optional — it's contractual. With 110 practices mapped directly to NIST SP 800-171 (and by extension NIST 800-53 Rev 5), the compliance surface area is significant. The good news is that with Azure Bicep, you can codify the majority of your technical controls into repeatable, auditable infrastructure templates that integrate cleanly into a DevSecOps pipeline.
+
+In this post, I'll walk you through how I architect and deploy CMMC Level 2 compliant Azure infrastructure using Bicep, covering the specific controls, real deployment commands, and the pitfalls I've seen trip up even experienced teams.
+
+---
+
+## Why CMMC Level 2 Matters in Azure GovCloud Environments
+
+CMMC Level 2 encompasses all 110 practices from NIST SP 800-171 Rev 2, which map to a subset of NIST 800-53 Rev 5 controls. For DoD contractors and federal civilian agencies, these controls must be technically enforced — not just documented. Azure Government (including GCC High for DIB contractors) provides the FedRAMP High authorization baseline, but authorization does not equal compliance. You still own the implementation of controls within your tenant.
+
+The key domains I consistently see fail during CMMC assessments include:
+
+- **Access Control (AC)** — Overly permissive IAM, missing MFA enforcement
+- **Audit and Accountability (AU)** — Incomplete log coverage, missing retention policies
+- **Configuration Management (CM)** — Drift from baselines, no IaC enforcement
+- **System and Communications Protection (SC)** — Unencrypted data paths, missing network segmentation
+
+Bicep gives us the ability to enforce these controls at deploy time, prevent drift through CI/CD gates, and produce artifacts that directly support your System Security Plan (SSP).
+
+---
+
+## Foundational Architecture for CMMC Level 2 Compliance
+
+Before writing a single line of Bicep, you need to establish your CUI boundary. In Azure, this typically maps to:
+
+- A dedicated subscription in Azure Government or GCC High
+- A resource group boundary for CUI workloads
+- A hub-spoke network topology with forced tunneling
+- Centralized logging to a dedicated Log Analytics Workspace
+
+My standard pattern uses a **management group policy hierarchy** to enforce guardrails at the subscription level, with Bicep modules handling the workload-level controls.
+
+---
+
+## Step 1 — Deploy the Core Logging and Monitoring Foundation
+
+CMMC Practice AU.2.041 and AU.3.045 require audit logging of all system activity and protection of audit logs. In Azure, this means deploying a Log Analytics Workspace with appropriate retention, Microsoft Defender for Cloud, and Diagnostic Settings on every resource.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// cmmc-logging-foundation.bicep
+// Addresses: AU.2.041, AU.3.045, AU.2.042 (NIST 800-171)
+// Maps to: AU-2, AU-9, AU-11 (NIST 800-53 Rev 5)
+
+param location string = resourceGroup().location
+param workspaceName string
+param retentionDays int = 365  // CMMC requires minimum 90 days; I recommend 365 for DoD
+
+resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: workspaceName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: retentionDays
+    features: {
+      enableLogAccessUsingOnlyResourcePermissions: true
+    }
+    publicNetworkAccessForIngestion: 'Disabled'   // SC.3.177 - protect data in transit
+    publicNetworkAccessForQuery: 'Disabled'
+  }
+}
+
+// Enable Microsoft Sentinel for SIEM capability (AU.3.045)
+resource sentinelSolution 'Microsoft.OperationsManagement/solutions@2015-11-01-preview' = {
+  name: 'SecurityInsights(${workspaceName})'
+  location: location
+  properties: {
+    workspaceResourceId: logAnalyticsWorkspace.id
+  }
+  plan: {
+    name: 'SecurityInsights(${workspaceName})'
+    publisher: 'Microsoft'
+    product: 'OMSGallery/SecurityInsights'
+    promotionCode: ''
+  }
+}
+
+// Defender for Cloud - Maps to SI.2.214, RA.2.141
+resource defenderPricing 'Microsoft.Security/pricings@2023-01-01' = {
+  name: 'VirtualMachines'
+  properties: {
+    pricingTier: 'Standard'
+    subPlan: 'P2'
+  }
+}
+
+output workspaceId string = logAnalyticsWorkspace.id
+output workspaceResourceId string = logAnalyticsWorkspace.id`, label: "cmmc-logging-foundation.bicep", language: "bicep" }]} copyButton />
+
+Deploy this foundation first before any workload resources:
+
+```bash
+az deployment group create \
+  --resource-group rg-cmmc-cui-prod \
+  --template-file cmmc-logging-foundation.bicep \
+  --parameters workspaceName=law-cmmc-cui-prod retentionDays=365 \
+  --confirm-with-what-if
+```
+
+---
+
+## Step 2 — Enforce Network Segmentation and CUI Boundary Controls
+
+CMMC practices SC.3.177, SC.3.183, and SC.3.185 require encryption of CUI in transit, network segmentation, and denial of network communications by default. I enforce these through a hardened virtual network module.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// cmmc-network-controls.bicep
+// Addresses: SC.3.177, SC.3.183, SC.3.185 (NIST 800-171)
+// Maps to: SC-7, SC-8, SC-28 (NIST 800-53 Rev 5)
+
+param location string = resourceGroup().location
+param vnetName string = 'vnet-cmmc-cui'
+param logAnalyticsWorkspaceId string
+
+var subnets = [
+  {
+    name: 'snet-workload'
+    addressPrefix: '10.0.1.0/24'
+    privateEndpointNetworkPolicies: 'Disabled'
+    privateLinkServiceNetworkPolicies: 'Enabled'
+    serviceEndpoints: []
+    delegation: ''
+  }
+  {
+    name: 'snet-management'
+    addressPrefix: '10.0.2.0/24'
+    privateEndpointNetworkPolicies: 'Disabled'
+    privateLinkServiceNetworkPolicies: 'Enabled'
+    serviceEndpoints: []
+    delegation: ''
+  }
+  {
+    name: 'AzureBastionSubnet'
+    addressPrefix: '10.0.3.0/27'   // Minimum /27 required for Bastion
+    privateEndpointNetworkPolicies: 'Enabled'
+    privateLinkServiceNetworkPolicies: 'Enabled'
+    serviceEndpoints: []
+    delegation: ''
+  }
+]
+
+// NSG with deny-by-default posture (SC.3.183)
+resource nsgWorkload 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
+  name: 'nsg-workload-cmmc'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'DenyAllInboundInternet'
+        properties: {
+          priority: 4000
+          protocol: '*'
+          access: 'Deny'
+          direction: 'Inbound'
+          sourceAddressPrefix: 'Internet'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '*'
+          description: 'CMMC SC.3.183 - Deny all inbound internet by default'
+        }
+      }
+      {
+        name: 'AllowBastionInbound'
+        properties: {
+          priority: 100
+          protocol: 'Tcp'
+          access: 'Allow'
+          direction: 'Inbound'
+          sourceAddressPrefix: '10.0.3.0/27'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '10.0.1.0/24'
+          destinationPortRanges: ['22', '3389']
+          description: 'Allow Bastion management access - IA.3.083'
+        }
+      }
+    ]
+  }
+}
+
+// NSG Diagnostic Settings - Required for AU.2.041
+resource nsgDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'diag-nsg-workload'
+  scope: nsgWorkload
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+        retentionPolicy: {
+          enabled: true
+          days: 365
+        }
+      }
+    ]
+  }
+}
+
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-04-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: ['10.0.0.0/16']
+    }
+    enableDdosProtection: true    // SC.3.177 availability protection
+    subnets: [for subnet in subnets: {
+      name: subnet.name
+      properties: {
+        addressPrefix: subnet.addressPrefix
+        privateEndpointNetworkPolicies: subnet.privateEndpointNetworkPolicies
+        privateLinkServiceNetworkPolicies: subnet.privateLinkServiceNetworkPolicies
+        networkSecurityGroup: subnet.name != 'AzureBastionSubnet' ? {
+          id: nsgWorkload.id
+        } : null
+      }
+    }]
+  }
+}
+
+output vnetId string = virtualNetwork.id
+output workloadSubnetId string = virtualNetwork.properties.subnets[0].id`, label: "cmmc-network-controls.bicep", language: "bicep" }]} copyButton />
+
+---
+
+## Step 3 — Enforce Access Control and Identity Hardening
+
+CMMC practices AC.1.001, AC.2.006, and IA.3.083 require least privilege access, MFA enforcement, and multi-factor authentication for privileged accounts. I enforce these through Azure Policy assignments in Bicep, targeting the subscription scope.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// cmmc-policy-assignments.bicep
+// Target scope: subscription
+// Addresses: AC.1.001, AC.2.006, IA.3.083, CM.2.061 (NIST 800-171)
+// Maps to: AC-2, AC-6, IA-2, CM-6 (NIST 800-53 Rev 5)
+
+targetScope = 'subscription'
+
+param logAnalyticsWorkspaceId string
+param policyAssignmentLocation string = 'usgovvirginia'
+
+// Built-in Policy: Require MFA for accounts with Owner permissions
+// Policy ID:fa4a5a69-5b12-45b6-a4f8-82d4e9bc3ec8
+resource mfaOwnerAssignment 'Microsoft.Authorization/policyAssignments@2022-06-01' = {
+  name: 'cmmc-mfa-owner-ia3083'
+  location: policyAssignmentLocation
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    policyDefinitionId: '/providers/Microsoft.Authorization/policyDefinitions/fa4a5a69-5b12-45b6-a4f8-82d4e9bc3ec8'
+    displayName: 'CMMC IA.3.083 - MFA for Owner Accounts'
+    description: 'Enforces MFA for all accounts with Owner permissions per CMMC IA.3.083'
+    enforcementMode: 'Default'
+    nonComplianceMessages: [
+      {
+        message: 'MFA must be enabled for all privileged accounts per CMMC Level 2 IA.3.083'
+      }
+    ]
+  }
+}
+
+// Built-in Initiative: NIST SP 800-171 Rev 2
+// Initiative ID: 03055927-78bd-4236-86c0-f36125a10dc9
+resource nist171Initiative 'Microsoft.Authorization/policyAssignments@2022-06-01' = {
+  name: 'cmmc-nist171-rev2-baseline'
+  location: policyAssignmentLocation
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    policyDefinitionId: '/providers/Microsoft.Authorization/policySetDefinitions/03055927-78bd-4236-86c0-f36125a10dc9'
+    displayName: 'CMMC Level 2 - NIST SP 800-171 Rev 2 Baseline'
+    description: 'Full NIST SP 800-171 Rev 2 policy initiative for CMMC Level 2 compliance'
+    enforcementMode: 'Default'
+    parameters: {
+      logAnalyticsWorkspaceId: {
+        value: logAnalyticsWorkspaceId
+      }
+    }
+  }
+}
+
+// Deny public IP creation in CUI subscription (SC.3.183)
+resource denyPublicIPPolicy 'Microsoft.Authorization/policyAssignments@2022-06-01' = {
+  name: 'cmmc-deny-public-ip-sc3183'
+  location: policyAssignmentLocation
+  properties: {
+    policyDefinitionId: '/providers/Microsoft.Authorization/policyDefinitions/6c112d4e-5bc7-47ae-a041-ea2d9dccd749'
+    displayName: 'CMMC SC.3.183 - Deny Public IP Creation'
+    enforcementMode: 'Default'
+    nonComplianceMessages: [
+      {
+        message: 'Public IP addresses are not permitted in CUI environments per CMMC SC.3.183'
+      }
+    ]
+  }
+}`, label: "cmmc-policy-assignments.bicep", language: "bicep" }]} copyButton />
+
+Deploy the policy stack at subscription scope:
+
+```bash
+az deployment sub create \
+  --location usgovvirginia \
+  --template-file cmmc-policy-assignments.bicep \
+  --parameters logAnalyticsWorkspaceId="/subscriptions/<sub-id>/resourceGroups/rg-cmmc-cui-prod/providers/Microsoft.OperationalInsights/workspaces/law-cmmc-cui-prod" \
+  --confirm-with-what-if
+```
+
+---
+
+## Key NIST 800-53 and CMMC Controls Addressed
+
+Here's my mapping of what these Bicep modules cover against both frameworks:
+
+| CMMC Practice | NIST 800-171 Domain | NIST 800-53 Rev 5 Control | Bicep Enforcement |
+|---|---|---|---|
+| AC.1.001 | Access Control | AC-2, AC-3 | Policy Assignment |
+| AU.2.041 | Audit & Accountability | AU-2, AU-12 | Diagnostic Settings |
+| AU.3.045 | Audit & Accountability | AU-9 | Workspace RBAC + Private Endpoints |
+| SC.3.177 | System & Comms | SC-8, SC-28 | TLS enforcement, DDoS |
+| SC.3.183 | System & Comms | SC-7 | NSG deny-default, Policy deny |
+| IA.3.083 | Identification & Auth | IA-2(1), IA-2(2) | Policy MFA enforcement |
+| CM.2.061 | Config Management | CM-6, CM-7 | Policy Initiative baseline |
+
+---
+
+## Common Pitfalls and How I Avoid Them
+
+**1. Forgetting Diagnostic Settings on Every Resource**
+The single most common gap I find during CMMC assessments is
