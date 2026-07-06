@@ -30,6 +30,7 @@
     "aks-iron-bank-cosign-signature-verification",
     "fedramp-high-azure-sentinel-siem-automation",
     "poam-automation-oscal-azure-devops-pipeline",
-    "cmmc-level-2-azure-compliance-bicep"
+    "cmmc-level-2-azure-compliance-bicep",
+    "azure-government-gcc-high-vs-gcc-comparison"
   ]
 }
