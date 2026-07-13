@@ -31,6 +31,7 @@
     "fedramp-high-azure-sentinel-siem-automation",
     "poam-automation-oscal-azure-devops-pipeline",
     "cmmc-level-2-azure-compliance-bicep",
-    "azure-government-gcc-high-vs-gcc-comparison"
+    "azure-government-gcc-high-vs-gcc-comparison",
+    "aks-hardening-cis-benchmark-azure-policy"
   ]
 }

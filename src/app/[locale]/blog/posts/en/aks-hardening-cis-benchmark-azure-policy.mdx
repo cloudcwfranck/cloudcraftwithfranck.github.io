@@ -1,0 +1,341 @@
+---
+title: "Aks Hardening Cis Benchmark Azure Policy"
+publishedAt: "2026-07-13"
+summary: "A deep-dive into aks hardening cis benchmark azure policy for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Kubernetes"
+---
+
+## AKS Hardening with CIS Benchmark and Azure Policy: A FedRAMP-Ready Implementation Guide
+
+If you're running containerized workloads in a DoD or federal civilian environment, AKS hardening isn't optional — it's a compliance mandate. I've spent considerable time implementing CIS Kubernetes Benchmark controls across Azure Government (GCC High) and DoD IL4/IL5 environments, and the gap between "deployed AKS" and "audit-ready AKS" is substantial. This post walks you through exactly how I close that gap using Azure Policy, the CIS AKS Benchmark, and a fully automated DevSecOps pipeline.
+
+---
+
+## Why CIS Benchmark + Azure Policy Matters for GovCloud and FedRAMP
+
+The **CIS Azure Kubernetes Service Benchmark** (currently v1.5.0) provides prescriptive hardening guidance mapped directly to Kubernetes control plane and data plane configurations. For FedRAMP Moderate/High and DoD IL4/IL5 authorizations, your AKS clusters must demonstrate compliance with a subset of **NIST SP 800-53 Rev 5** controls — particularly:
+
+- **SI-3 / SI-7** — Malicious code protection and software integrity
+- **AC-3 / AC-6** — Access enforcement and least privilege (RBAC, Pod Security)
+- **CM-6 / CM-7** — Configuration settings and least functionality
+- **AU-2 / AU-12** — Audit events and audit record generation
+- **SC-7 / SC-28** — Boundary protection and data at rest encryption
+
+Azure Policy's **built-in initiative `[Preview]: [AKS] CIS Kubernetes Benchmark`** and the **Azure Security Benchmark for Kubernetes** give you the enforcement layer. But raw initiative assignment alone won't get you there. You need node pool hardening, admission controllers, network policies, and continuous compliance telemetry — all wired into your pipeline.
+
+---
+
+## Step 1: Pre-Hardening Cluster Assessment
+
+Before touching policy, I always run a baseline assessment. Use `kube-bench` against your existing cluster to understand your CIS posture before you apply remediations.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Deploy kube-bench as a Job on AKS (run against master and node profiles)
+cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench-node
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      hostPID: true
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - operator: Exists
+      containers:
+      - name: kube-bench
+        image: aquasec/kube-bench:v0.7.3
+        command: ["kube-bench", "--benchmark", "aks-1.0", "--json"]
+        volumeMounts:
+        - name: var-lib-kubelet
+          mountPath: /var/lib/kubelet
+          readOnly: true
+        - name: etc-systemd
+          mountPath: /etc/systemd
+          readOnly: true
+        - name: etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+      restartPolicy: Never
+      volumes:
+      - name: var-lib-kubelet
+        hostPath:
+          path: /var/lib/kubelet
+      - name: etc-systemd
+        hostPath:
+          path: /etc/systemd
+      - name: etc-kubernetes
+        hostPath:
+          path: /etc/kubernetes
+EOF
+
+# Retrieve results
+kubectl logs -n kube-system job/kube-bench-node --follow`, label: "kube-bench Assessment", language: "bash" }]} copyButton />
+
+Pull the JSON output and map failing controls to CIS section numbers. I typically see consistent failures in sections **4.2 (Kubelet configuration)**, **5.1 (RBAC and service accounts)**, and **5.2 (Pod Security Admission)**. These are your priority remediation targets.
+
+---
+
+## Step 2: Deploy a Hardened AKS Cluster with Bicep
+
+Don't try to harden a running production cluster ad hoc. Build hardening into your IaC from day one. Here's the Bicep configuration I use for FedRAMP-aligned AKS deployments in Azure Government:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// aks-hardened.bicep — FedRAMP/CIS-aligned AKS cluster definition
+param clusterName string = 'aks-fedramp-prod'
+param location string = resourceGroup().location
+param kubernetesVersion string = '1.29.2'
+param nodeResourceGroup string = 'rg-aks-nodes-prod'
+param logAnalyticsWorkspaceId string
+
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
+  name: clusterName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    kubernetesVersion: kubernetesVersion
+    dnsPrefix: '${clusterName}-dns'
+    nodeResourceGroup: nodeResourceGroup
+
+    // CIS 4.2.x — Disable local accounts, enforce AAD RBAC
+    disableLocalAccounts: true
+    aadProfile: {
+      managed: true
+      enableAzureRBAC: true
+      tenantID: subscription().tenantId
+    }
+
+    // CIS 5.6.x — Private cluster, no public API server
+    apiServerAccessProfile: {
+      enablePrivateCluster: true
+      privateDNSZone: 'system'
+      enablePrivateClusterPublicFQDN: false
+    }
+
+    // CIS 6.x — Enable Azure CNI with network policy
+    networkProfile: {
+      networkPlugin: 'azure'
+      networkPolicy: 'azure'
+      outboundType: 'userDefinedRouting'
+      loadBalancerSku: 'standard'
+    }
+
+    // CIS 5.4.x — Enable OMS agent for audit logging
+    addonProfiles: {
+      omsagent: {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
+        }
+      }
+      azurePolicy: {
+        enabled: true  // Required for Azure Policy enforcement
+      }
+      azureKeyvaultSecretsProvider: {
+        enabled: true
+        config: {
+          enableSecretRotation: 'true'
+          rotationPollInterval: '2m'
+        }
+      }
+    }
+
+    agentPoolProfiles: [
+      {
+        name: 'systempool'
+        count: 3
+        vmSize: 'Standard_D4s_v5'
+        osDiskType: 'Ephemeral'       // CIS 4.x — ephemeral OS disk
+        osDiskSizeGB: 128
+        osType: 'Linux'
+        mode: 'System'
+        enableAutoScaling: true
+        minCount: 3
+        maxCount: 6
+        enableNodePublicIP: false     // CIS 5.6.x — no public node IPs
+        nodeLabels: {
+          'node-role': 'system'
+        }
+        nodeTaints: [
+          'CriticalAddonsOnly=true:NoSchedule'
+        ]
+      }
+    ]
+
+    // CIS 3.x — Enable Azure Defender for Containers
+    securityProfile: {
+      defender: {
+        securityMonitoring: {
+          enabled: true
+        }
+        logAnalyticsWorkspaceResourceId: logAnalyticsWorkspaceId
+      }
+      workloadIdentity: {
+        enabled: true
+      }
+      imageCleaner: {
+        enabled: true
+        intervalHours: 24
+      }
+    }
+
+    // CIS 4.2.x — OS hardening via auto-upgrade
+    autoUpgradeProfile: {
+      upgradeChannel: 'patch'
+      nodeOSUpgradeChannel: 'NodeImage'
+    }
+
+    // Enable Pod Security Admission (replaces deprecated PSP)
+    podIdentityProfile: {
+      enabled: false  // Use workload identity instead
+    }
+  }
+}
+
+output clusterName string = aksCluster.name
+output clusterFqdn string = aksCluster.properties.privateFQDN`, label: "Hardened AKS Bicep", language: "bicep" }]} copyButton />
+
+Key decisions here: ephemeral OS disks satisfy CIS 4.x immutability requirements, `disableLocalAccounts: true` closes a common audit finding, and `azurePolicy: enabled` is the prerequisite for every policy control downstream.
+
+---
+
+## Step 3: Assign CIS Azure Policy Initiatives at Subscription Scope
+
+With the cluster deployed, assign the CIS and FedRAMP policy initiatives. I do this via Azure CLI in my pipeline rather than the portal — repeatable and auditable.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `#!/bin/bash
+# assign-aks-policies.sh — Assign CIS and FedRAMP initiatives to AKS resource group
+
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+RG_NAME="rg-aks-prod"
+ASSIGNMENT_LOCATION="usgovvirginia"  # Azure Government region
+LOG_ANALYTICS_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/rg-monitoring/providers/Microsoft.OperationalInsights/workspaces/law-fedramp"
+
+echo "==> Assigning CIS Kubernetes Benchmark Initiative..."
+az policy assignment create \
+  --name "cis-aks-benchmark" \
+  --display-name "CIS AKS Benchmark v1.5 - Production" \
+  --policy-set-definition "a8640138-9b0a-4a28-b8cb-1666c838647d" \
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG_NAME}" \
+  --location "${ASSIGNMENT_LOCATION}" \
+  --identity-scope "/subscriptions/${SUBSCRIPTION_ID}" \
+  --role "Contributor" \
+  --enforcement-mode Default \
+  --params '{
+    "effect": {"value": "Audit"},
+    "excludedNamespaces": {"value": ["kube-system","gatekeeper-system","azure-arc"]}
+  }'
+
+echo "==> Assigning FedRAMP High Initiative..."
+az policy assignment create \
+  --name "fedramp-high-aks" \
+  --display-name "FedRAMP High - AKS Controls" \
+  --policy-set-definition "d5264498-16f4-418a-b659-fa7ef418175f" \
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG_NAME}" \
+  --location "${ASSIGNMENT_LOCATION}" \
+  --identity-scope "/subscriptions/${SUBSCRIPTION_ID}" \
+  --role "Log Analytics Contributor" \
+  --enforcement-mode Default \
+  --params "{
+    \"logAnalyticsWorkspaceIdforVMs\": {\"value\": \"${LOG_ANALYTICS_ID}\"}
+  }"
+
+echo "==> Assigning Pod Security Admission enforcement policy..."
+# Ensures namespaces are labeled with pod-security admission levels
+az policy assignment create \
+  --name "aks-pod-security-admission" \
+  --display-name "AKS Pod Security Admission Standards" \
+  --policy-definition "47a1ee2f-2a2a-4576-bf2a-e0e36709c2b8" \
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG_NAME}" \
+  --location "${ASSIGNMENT_LOCATION}" \
+  --enforcement-mode Default \
+  --params '{
+    "effect": {"value": "Deny"},
+    "excludedNamespaces": {"value": ["kube-system"]}
+  }'
+
+echo "==> Triggering compliance scan..."
+az policy state trigger-scan \
+  --resource-group "${RG_NAME}"
+
+echo "==> Compliance assignments complete. Allow 15-30 minutes for initial evaluation."`, label: "Policy Assignment Script", language: "bash" }]} copyButton />
+
+> **Critical note for GCC High:** Policy definition IDs can differ between Azure Commercial and Azure Government. Always validate with `az policy set-definition list --query "[?contains(displayName,'CIS')]" -o table` against your sovereign cloud endpoint before scripting assignments.
+
+---
+
+## Step 4: Enforce Namespace-Level Pod Security Admission
+
+Post-PSP deprecation (Kubernetes 1.25+), Pod Security Admission (PSA) is your built-in enforcement layer. Label your namespaces correctly — this is a CIS 5.2.x requirement and maps directly to **NIST AC-6 (Least Privilege)**:
+
+```bash
+# Apply restricted policy to all application namespaces
+kubectl label namespace production \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/enforce-version=v1.29 \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted
+
+# Baseline for monitoring/logging namespaces
+kubectl label namespace monitoring \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted
+```
+
+Pair this with a Network Policy that defaults-deny all ingress/egress at the namespace level, then allowlist only required paths — satisfying **NIST SC-7 (Boundary Protection)**.
+
+---
+
+## Step 5: Continuous Compliance Monitoring with KQL
+
+Policy assignments give you compliance state, but you need operational visibility. I use this KQL query in Log Analytics / Azure Monitor Workbooks to surface non-compliant AKS resources continuously:
+
+```kql
+// KQL: AKS CIS Compliance — Non-compliant resources with control mapping
+PolicyResources
+| where type == "microsoft.policyinsights/policystates"
+| where properties.complianceState == "NonCompliant"
+| where properties.resourceType contains "containerService"
+| extend
+    PolicyName = tostring(properties.policyDefinitionName),
+    PolicyEffect = tostring(properties.policyDefinitionAction),
+    ResourceName = tostring(properties.resourceDetails.resourceId),
+    EvaluationTime = todatetime(properties.timestamp),
+    InitiativeName = tostring(properties.policySetDefinitionName)
+| where InitiativeName contains "CIS" or InitiativeName contains "FedRAMP"
+| summarize
+    FailureCount = count(),
+    AffectedResources = make_set(ResourceName),
+    LastEvaluated = max(EvaluationTime)
+    by PolicyName, PolicyEffect, InitiativeName
+| order by FailureCount desc
+| project
+    InitiativeName,
+    PolicyName,
+    PolicyEffect,
+    FailureCount,
+    AffectedResources,
+    LastEvaluated
+```
+
+Export this to a Power BI dashboard or wire it into your SIEM (Microsoft Sentinel) for continuous ATO monitoring. This directly supports **NIST CA-7 (Continuous Monitoring)** and closes the evidence loop for your SSP.
+
+---
+
+## Common Pitfalls and How I Avoid Them
+
+**1. Assigning Deny-mode policies without exclusion lists**
+Blanket `Deny` enforcement on kube-system and azure-specific namespaces will break cluster operations immediately. Always seed your `excludedNamespaces` parameter with `["kube-system", "gatekeeper-system", "azure-arc", "azure-extensions-usage-system"]` before going to `Deny` mode.
+
+**2. Ignoring the azurePolicy add-on prerequisite**
+Azure Policy for Kubernetes runs as an in-cluster Gatekeeper admission controller. If the add-on isn't enabled, your policy assignments show as compliant vacuously. I've seen audit findings fail because teams thought portal-level policy was enforcing — it wasn't.
+
+**3. Conflating Azure RBAC with Kubernetes RBAC**
+`enableAzureRBAC: true` routes kubectl authorization through Azure AD, but you still need K8s ClusterRoleBindings for service accounts and workload identity. These are separate planes. Confusion here creates both security gaps and access outages.
+
+**4. Not validating image admission**
+CIS section 5.5 requires image provenance controls. Azure Defender for Containers provides vulnerability scanning, but you need an **Azure Policy for AKS** definition that enforces allowed registries. Without this, developers can pull unscanned images from Docker Hub — a
