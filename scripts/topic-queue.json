@@ -32,6 +32,7 @@
     "poam-automation-oscal-azure-devops-pipeline",
     "cmmc-level-2-azure-compliance-bicep",
     "azure-government-gcc-high-vs-gcc-comparison",
-    "aks-hardening-cis-benchmark-azure-policy"
+    "aks-hardening-cis-benchmark-azure-policy",
+    "zero-trust-network-architecture-azure-govcloud"
   ]
 }
