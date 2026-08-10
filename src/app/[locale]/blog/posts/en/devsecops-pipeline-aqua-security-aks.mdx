@@ -1,0 +1,338 @@
+---
+title: "Devsecops Pipeline Aqua Security Aks"
+publishedAt: "2026-08-10"
+summary: "A deep-dive into devsecops pipeline aqua security aks for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Kubernetes"
+---
+
+## DevSecOps Pipeline with Aqua Security on AKS: A FedRAMP-Ready Implementation Guide
+
+If you're operating Kubernetes workloads in a DoD or federal civilian environment, you already know that container security isn't optional — it's a compliance requirement baked into FedRAMP High, DoD IL4/IL5, and every NIST 800-53 Rev 5 control family that touches SI, CM, and AU. What I see too often in federal engagements is teams bolting security onto the tail end of a pipeline as an afterthought. That doesn't fly in a GovCloud environment where an ATO is on the line.
+
+In this post, I'm walking you through a production-grade DevSecOps pipeline that integrates Aqua Security with Azure Kubernetes Service (AKS) inside Azure Government (GCC High). This covers image scanning, runtime enforcement, policy-as-code gates, and audit trail generation — all mapped to real NIST controls. Let's get into it.
+
+---
+
+## Why Aqua Security + AKS for FedRAMP Environments
+
+Aqua Security is one of the few container security platforms that has FedRAMP authorization precedent and deep integration with both Azure Defender for Containers and Azure Policy. On AKS, it operates as a DaemonSet-deployed enforcer with a centralized SaaS or self-hosted console, giving you:
+
+- **Image assurance policies** — block non-compliant images from running
+- **Runtime protection** — behavioral drift detection and process whitelisting
+- **CSPM posture scoring** — continuous misconfiguration detection across your cluster
+- **eBPF-based enforcement** — low-overhead kernel-level activity monitoring
+- **Audit trail export** — structured event logs consumable by Azure Monitor and Microsoft Sentinel
+
+For GovCloud, the critical requirement is that Aqua's data plane (the enforcer) runs inside your AKS cluster within your Azure Government subscription boundary. The control plane can be Aqua's SaaS offering (confirm their FedRAMP boundary with their CSP documentation) or self-hosted on AKS itself. For IL5 workloads, I always recommend self-hosted to keep data sovereignty clean.
+
+**NIST 800-53 Rev 5 Controls Addressed:**
+
+| Control | Description |
+|---|---|
+| SI-3 | Malicious Code Protection |
+| SI-7 | Software, Firmware, and Information Integrity |
+| CM-7 | Least Functionality |
+| CM-11 | User-Installed Software |
+| AU-2, AU-12 | Audit Events / Audit Record Generation |
+| RA-5 | Vulnerability Scanning |
+| SA-11 | Developer Testing and Evaluation |
+| CA-7 | Continuous Monitoring |
+
+---
+
+## Architecture Overview
+
+The pipeline I'm describing follows this flow:
+
+```
+Developer Push → GitHub Actions / Azure DevOps → Aqua Image Scan (CI Gate) →
+Azure Container Registry (ACR) → Aqua Registry Scan → AKS Admission Controller
+(Aqua Enforcer) → Runtime Policy Enforcement → Logs → Azure Monitor / Sentinel
+```
+
+Everything runs inside Azure Government with private endpoints. No public egress for image pulls or scan results.
+
+---
+
+## Step 1: Provision AKS with Security Hardening
+
+Before installing Aqua, your AKS cluster needs to be hardened to the baseline that Aqua's enforcer expects and that FedRAMP requires.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Deploy a hardened AKS cluster in Azure Government
+# Run this from Azure Government endpoint
+
+az cloud set --name AzureUSGovernment
+
+az group create \
+  --name rg-devsecops-prod \
+  --location usgovvirginia
+
+az aks create \
+  --resource-group rg-devsecops-prod \
+  --name aks-fedramp-prod \
+  --kubernetes-version 1.29.2 \
+  --node-count 3 \
+  --node-vm-size Standard_D4s_v5 \
+  --enable-managed-identity \
+  --enable-aad \
+  --enable-azure-rbac \
+  --enable-defender \
+  --enable-azure-monitor-metrics \
+  --enable-addons monitoring \
+  --workspace-resource-id /subscriptions/<SUB_ID>/resourceGroups/rg-monitoring/providers/Microsoft.OperationalInsights/workspaces/law-fedramp \
+  --network-plugin azure \
+  --network-policy azure \
+  --enable-private-cluster \
+  --disable-public-fqdn \
+  --enable-oidc-issuer \
+  --enable-workload-identity \
+  --os-sku AzureLinux \
+  --node-os-upgrade-channel SecurityPatch \
+  --auto-upgrade-channel stable \
+  --tags environment=production classification=fedramp-high
+
+# Retrieve credentials
+az aks get-credentials \
+  --resource-group rg-devsecops-prod \
+  --name aks-fedramp-prod \
+  --overwrite-existing
+
+# Verify cluster is running
+kubectl get nodes -o wide`, label: "AKS Hardened Cluster Provisioning", language: "bash" }]} copyButton />
+
+Key flags to call out here:
+- `--enable-defender` activates Microsoft Defender for Containers, which complements Aqua's runtime signals
+- `--network-policy azure` enforces pod-level network segmentation (required for CM-7)
+- `--enable-workload-identity` replaces legacy service principal patterns — Aqua's enforcer uses this for ACR access
+- `--os-sku AzureLinux` is the FIPS-validated OS option on Azure Government nodes
+- `--node-os-upgrade-channel SecurityPatch` ensures CVE patches flow automatically (SI-2 compliance)
+
+---
+
+## Step 2: Deploy Aqua Enforcer on AKS via Helm
+
+Aqua's enforcer is deployed as a privileged DaemonSet. In FedRAMP environments, you need to explicitly document this privileged container exemption in your SSP. The enforcer requires host-level access to mount namespaces for eBPF enforcement.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Add Aqua Helm repo
+helm repo add aqua https://helm.aquasec.com
+helm repo update
+
+# Create dedicated namespace with restricted pod security admission
+kubectl create namespace aqua
+
+kubectl label namespace aqua \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted
+
+# Create Aqua registry secret (pull from Aqua's private registry)
+kubectl create secret docker-registry aqua-registry \
+  --docker-server=registry.aquasec.com \
+  --docker-username=<AQUA_USERNAME> \
+  --docker-password=<AQUA_PASSWORD> \
+  --namespace aqua
+
+# Create enforcer token secret
+kubectl create secret generic enforcer-token \
+  --from-literal=token=<AQUA_ENFORCER_TOKEN> \
+  --namespace aqua
+
+# Deploy Aqua Enforcer via Helm with FedRAMP-aligned values
+helm install aqua-enforcer aqua/enforcer \
+  --namespace aqua \
+  --set imageCredentials.create=false \
+  --set imageCredentials.name=aqua-registry \
+  --set enforcerToken=$(kubectl get secret enforcer-token -n aqua -o jsonpath='{.data.token}' | base64 -d) \
+  --set gateway.host=<AQUA_GATEWAY_HOST> \
+  --set gateway.port=8443 \
+  --set expressModeEnabled=true \
+  --set runtimePolicy.enforceMode=true \
+  --set auditWatcher.enabled=true \
+  --set tolerations[0].operator=Exists \
+  --set resources.requests.cpu=250m \
+  --set resources.requests.memory=512Mi \
+  --set resources.limits.cpu=1000m \
+  --set resources.limits.memory=1Gi
+
+# Verify enforcer pods are running on all nodes
+kubectl get pods -n aqua -o wide
+kubectl logs -n aqua -l app=aqua-enforcer --tail=50`, label: "Aqua Enforcer Helm Deployment", language: "bash" }]} copyButton />
+
+Once the enforcer DaemonSet is healthy, every container start event on the cluster is intercepted and evaluated against your Aqua policies before the container process begins executing.
+
+---
+
+## Step 3: CI Pipeline Gate — Image Scanning in Azure DevOps
+
+This is the shift-left piece. Every image built in your pipeline must pass Aqua's image assurance scan before it gets pushed to ACR. A failed scan breaks the build — not just generates a warning.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# azure-pipelines.yml — DevSecOps pipeline with Aqua scan gate
+
+trigger:
+  branches:
+    include:
+      - main
+      - release/*
+
+variables:
+  acrName: acrfedrampgov
+  imageName: myapp
+  imageTag: $(Build.BuildId)
+  aquaScannerImage: registry.aquasec.com/scanner:2022.4
+
+stages:
+  - stage: Build
+    displayName: Build and Scan
+    jobs:
+      - job: BuildImage
+        pool:
+          name: AzureGovSelfHosted
+        steps:
+          - task: Docker@2
+            displayName: Build Docker Image
+            inputs:
+              command: build
+              repository: $(acrName).azurecr.us/$(imageName)
+              tags: $(imageTag)
+              Dockerfile: Dockerfile
+
+          - script: |
+              docker run --rm \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -e AQUA_TOKEN=$(AQUA_TOKEN) \
+                -e AQUA_HOST=$(AQUA_HOST) \
+                $(aquaScannerImage) \
+                scan \
+                --host $(AQUA_HOST) \
+                --token $(AQUA_TOKEN) \
+                --image $(acrName).azurecr.us/$(imageName):$(imageTag) \
+                --register \
+                --registry "Azure-Gov-ACR" \
+                --policies "fedramp-high-policy" \
+                --htmlfile $(Build.ArtifactStagingDirectory)/aqua-scan-report.html \
+                --jsonfile $(Build.ArtifactStagingDirectory)/aqua-scan-results.json
+            displayName: Aqua Image Scan Gate
+            env:
+              AQUA_TOKEN: $(AQUA_TOKEN)
+              AQUA_HOST: $(AQUA_HOST)
+
+          - task: PublishBuildArtifacts@1
+            displayName: Publish Scan Report
+            inputs:
+              pathToPublish: $(Build.ArtifactStagingDirectory)
+              artifactName: SecurityReports
+            condition: always()
+
+          - task: Docker@2
+            displayName: Push to ACR (only if scan passed)
+            inputs:
+              command: push
+              repository: $(acrName).azurecr.us/$(imageName)
+              tags: $(imageTag)
+            condition: succeeded()`, label: "Azure DevOps Pipeline with Aqua Gate", language: "yaml" }]} copyButton />
+
+The `--policies "fedramp-high-policy"` flag references a named policy in your Aqua console that I configure to block on:
+- Any CRITICAL CVE with a fix available
+- HIGH CVEs with CVSS ≥ 8.0 and a fix available
+- Images running as root (UID 0)
+- Images with embedded secrets detected by Aqua's secret scanner
+- Images not built from an approved base image list
+
+This gives you a documented, auditable gate that maps directly to RA-5 (Vulnerability Scanning) and SA-11 (Developer Security Testing).
+
+---
+
+## Step 4: Admission Control — Preventing Non-Compliant Deployments
+
+Even with CI scanning, you need a runtime gate at the Kubernetes API level. Aqua's enforcer acts as a Kubernetes admission webhook. Here's how to validate it's working and write a KQL query to monitor denials in your Log Analytics workspace:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Verify Aqua admission webhook registration
+kubectl get mutatingwebhookconfigurations | grep aqua
+kubectl get validatingwebhookconfigurations | grep aqua
+
+# Check enforcer audit events flowing to stdout
+kubectl logs -n aqua -l app=aqua-enforcer --tail=100 | grep -E "BLOCK|ALLOW|AUDIT"
+
+# KQL Query — Aqua Enforcement Events in Log Analytics
+# Run this in your Azure Government Log Analytics workspace
+
+ContainerLog
+| where LogEntry contains "aqua"
+| where LogEntry contains "block" or LogEntry contains "enforce"
+| extend ParsedLog = parse_json(LogEntry)
+| project 
+    TimeGenerated,
+    ClusterName = tostring(ParsedLog.cluster),
+    Namespace = tostring(ParsedLog.namespace),
+    PodName = tostring(ParsedLog.pod_name),
+    ImageName = tostring(ParsedLog.image),
+    Action = tostring(ParsedLog.action),
+    PolicyName = tostring(ParsedLog.policy),
+    Reason = tostring(ParsedLog.reason),
+    UserIdentity = tostring(ParsedLog.user)
+| where Action == "block"
+| order by TimeGenerated desc
+| summarize BlockCount=count() by ImageName, PolicyName, Reason, bin(TimeGenerated, 1h)`, label: "Admission Webhook Validation and KQL Monitoring", language: "bash" }]} copyButton />
+
+This KQL query feeds a Microsoft Sentinel workbook I build for every FedRAMP engagement. It gives your ISSO a real-time dashboard of blocked deployments, which directly satisfies the CA-7 (Continuous Monitoring) requirement and provides the evidence artifacts needed during your 3PAO assessment.
+
+---
+
+## Step 5: Runtime Policy Configuration for IL4/IL5
+
+For DoD IL4 and IL5 workloads, runtime enforcement needs to be more aggressive than the default Aqua profile. Here's the Aqua runtime policy configuration I use, expressed as a Kubernetes ConfigMap that feeds the enforcer:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# aqua-runtime-policy.yaml — IL4/IL5 hardened runtime profile
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aqua-runtime-policy-il4
+  namespace: aqua
+  labels:
+    classification: il4-il5
+    framework: fedramp-high
+data:
+  policy.json: |
+    {
+      "name": "DoD-IL4-Runtime-Policy",
+      "enforce": true,
+      "block_container_exec": false,
+      "block_non_compliant_images": true,
+      "block_unregistered_images": true,
+      "drift_prevention": {
+        "enabled": true,
+        "exec_lockdown": true,
+        "image_lockdown": true
+      },
+      "allowed_executables": {
+        "enabled": true,
+        "executables": ["/usr/bin/node", "/usr/bin/python3", "/app/server"]
+      },
+      "file_integrity_monitoring": {
+        "enabled": true,
+        "monitor_read": false,
+        "monitor_write": true,
+        "monitor_create": true,
+        "monitor_delete": true,
+        "monitored_paths": ["/etc", "/usr/bin", "/usr/sbin", "/app/config"]
+      },
+      "network_policy": {
+        "block_unregistered_connections": true,
+        "allowed_outbound": ["10.0.0.0/8", "172.16.0.0/12"]
+      },
+      "audit": {
+        "all_processes": true,
+        "all_network": true,
+        "dns_events": true
+      }
+    }
+
+---
+# Apply the policy ConfigMap
+# kubectl apply -f aqua-runtime-policy.yaml
+
+# Verify File Integrity Monitoring is active for SI-7 compliance
+kubectl exec -n aqua -it $(kubectl get pod -n aqua -l app=aqua-enforcer -o jsonpath='{.items[0].metadata.name}') \
+  -- /usr/local/bin/aqua-agent status`, label: "IL4/IL5 Runtime Policy Configuration", language: "yaml" }]} copyButton />
+
+The `drift_prevention.exec_lockdown` setting is particularly important
