@@ -35,6 +35,7 @@
     "aks-hardening-cis-benchmark-azure-policy",
     "zero-trust-network-architecture-azure-govcloud",
     "azure-arc-kubernetes-dod-il5-compliance",
-    "devsecops-pipeline-aqua-security-aks"
+    "devsecops-pipeline-aqua-security-aks",
+    "fedramp-high-log-analytics-workspace-design"
   ]
 }

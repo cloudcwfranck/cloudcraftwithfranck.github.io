@@ -1,0 +1,345 @@
+---
+title: "Fedramp High Log Analytics Workspace Design"
+publishedAt: "2026-09-28"
+summary: "A deep-dive into fedramp high log analytics workspace design for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "FedRAMP"
+---
+
+## FedRAMP High Log Analytics Workspace Design
+
+If you're operating workloads in Azure Government under a FedRAMP High authorization boundary, your Log Analytics Workspace (LAW) is not just a monitoring tool — it's a federal compliance artifact. Every log retention policy, RBAC assignment, diagnostic setting, and data export configuration you set is directly traceable to NIST 800-53 Rev 5 controls. Get it wrong, and you're looking at audit findings, POA&M entries, and potentially a suspended ATO.
+
+In this post, I'm walking you through how I design and implement FedRAMP High-compliant Log Analytics Workspaces in Azure Government, including the exact Bicep templates, KQL queries, and CLI commands I use in production DoD and federal civilian environments.
+
+---
+
+## Why Log Analytics Workspace Design Matters in FedRAMP High
+
+FedRAMP High builds directly on NIST 800-53 Rev 5 at the HIGH baseline. The controls that a well-designed LAW directly addresses include:
+
+- **AU-2 / AU-12**: Event Logging — you must log specific event types across all in-scope resources
+- **AU-3**: Content of Audit Records — logs must capture who, what, when, where, outcome
+- **AU-9**: Protection of Audit Information — logs must be protected from unauthorized access and modification
+- **AU-11**: Audit Record Retention — FedRAMP High mandates a minimum of 1 year online, 3 years archived
+- **SI-4**: System Monitoring — continuous monitoring of the authorization boundary
+- **IR-5**: Incident Monitoring — centralized log collection is foundational to IR capability
+- **SC-28**: Protection of Information at Rest — data encryption for stored logs
+
+A common mistake I see in federal cloud environments is treating LAW as a default "turn it on and forget it" resource. In FedRAMP High, every configuration decision must be intentional, documented, and defensible to a Third Party Assessment Organization (3PAO).
+
+---
+
+## Architecture Overview
+
+Before diving into code, here's the target architecture I implement for FedRAMP High environments:
+
+- **Dedicated LAW per authorization boundary** (never share workspaces across authorization boundaries)
+- **Customer-Managed Keys (CMK)** via Azure Key Vault for AU-9 and SC-28 compliance
+- **Workspace-level RBAC** scoped with least privilege
+- **Immutable storage via Azure Monitor Logs Dedicated Cluster** or Blob export with WORM policies
+- **Diagnostic settings** pushed from all in-scope resources
+- **Microsoft Sentinel** layered on top for SI-4 and IR-5
+- **Private Link** to prevent log exfiltration over public endpoints
+
+---
+
+## Step 1: Deploy the Log Analytics Workspace with Bicep
+
+I always use Bicep for Infrastructure as Code in federal environments because it integrates cleanly with Azure Policy and provides a clear audit trail in your CI/CD pipeline. Here's a production-ready Bicep template I use for FedRAMP High LAW deployments:
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "FedRAMP-LAW.bicep",
+      language: "bicep",
+      code: `// FedRAMP High - Log Analytics Workspace
+// Controls: AU-2, AU-3, AU-9, AU-11, SC-28
+// Target: Azure Government (usgovvirginia / usgovtexas)
+
+@description('Name of the Log Analytics Workspace')
+param workspaceName string = 'law-fedramp-high-prod'
+
+@description('Azure Government region')
+param location string = 'usgovvirginia'
+
+@description('Retention in days - FedRAMP High minimum: 365')
+@minValue(365)
+@maxValue(730)
+param retentionDays int = 365
+
+@description('Key Vault URI for Customer-Managed Key (CMK)')
+param keyVaultKeyUri string
+
+@description('Log Analytics Dedicated Cluster Resource ID (for CMK)')
+param dedicatedClusterResourceId string
+
+@description('Tags for compliance tracking')
+param tags object = {
+  environment: 'production'
+  classification: 'CUI'
+  complianceFramework: 'FedRAMP-High'
+  nistControls: 'AU-2,AU-9,AU-11,SC-28'
+  dataOwner: 'ISSO'
+}
+
+// Deploy the workspace
+resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
+  name: workspaceName
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'CapacityReservation'
+      capacityReservationLevel: 100
+    }
+    retentionInDays: retentionDays
+    features: {
+      enableLogAccessUsingOnlyResourcePermissions: false
+      clusterResourceId: dedicatedClusterResourceId
+      disableLocalAuth: true          // Forces AAD-only auth (IA-2, IA-8)
+      immediatePurgeDataOn30Days: false
+    }
+    workspaceCapping: {
+      dailyQuotaGb: -1  // No cap — critical for AU-11 compliance; set alerts instead
+    }
+    publicNetworkAccessForIngestion: 'Disabled'   // SC-7 Network boundary control
+    publicNetworkAccessForQuery: 'Disabled'
+  }
+}
+
+// Assign Customer-Managed Key for SC-28 / AU-9
+resource cmkAssociation 'Microsoft.OperationalInsights/workspaces/linkedServices@2020-08-01' = {
+  parent: logAnalyticsWorkspace
+  name: 'Cluster'
+  properties: {
+    writeAccessResourceId: dedicatedClusterResourceId
+  }
+}
+
+// Diagnostic settings on the workspace itself
+resource workspaceDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'law-self-diagnostics'
+  scope: logAnalyticsWorkspace
+  properties: {
+    workspaceId: logAnalyticsWorkspace.id
+    logs: [
+      {
+        category: 'Audit'
+        enabled: true
+        retentionPolicy: {
+          enabled: true
+          days: retentionDays
+        }
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
+  }
+}
+
+output workspaceId string = logAnalyticsWorkspace.id
+output workspaceCustomerId string = logAnalyticsWorkspace.properties.customerId`,
+    },
+  ]}
+  copyButton
+/>
+
+Deploy this using the Azure CLI targeting Azure Government:
+
+```bash
+az cloud set --name AzureUSGovernment
+az login --tenant <your-gov-tenant-id>
+
+az deployment group create \
+  --resource-group rg-fedramp-logging \
+  --template-file FedRAMP-LAW.bicep \
+  --parameters workspaceName='law-fedramp-high-prod' \
+               keyVaultKeyUri='https://kv-fedramp-prod.vault.usgovcloudapi.net/keys/law-cmk/...' \
+               dedicatedClusterResourceId='/subscriptions/.../resourceGroups/.../providers/Microsoft.OperationalInsights/clusters/lac-fedramp-prod'
+```
+
+---
+
+## Step 2: Configure Diagnostic Settings for All In-Scope Resources
+
+One of the most common 3PAO findings I see is incomplete diagnostic coverage — resources exist inside the authorization boundary but aren't sending logs to the centralized workspace. I automate this at scale using Azure Policy with `deployIfNotExists` effects.
+
+For a quick remediation sweep across existing resources, here's the PowerShell approach I use:
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "Set-DiagnosticSettings.ps1",
+      language: "powershell",
+      code: `# FedRAMP High - Bulk Diagnostic Settings Enforcement
+# Controls: AU-2, AU-12, SI-4
+# Run in Azure Government context
+
+Connect-AzAccount -Environment AzureUSGovernment -Tenant $env:GOV_TENANT_ID
+
+$workspaceId = "/subscriptions/$($env:SUBSCRIPTION_ID)/resourceGroups/rg-fedramp-logging/providers/Microsoft.OperationalInsights/workspaces/law-fedramp-high-prod"
+
+# Get all Key Vaults in scope (critical for AU-2 - privileged access logging)
+$keyVaults = Get-AzKeyVault -ResourceGroupName "rg-fedramp-prod"
+
+foreach ($kv in $keyVaults) {
+    $categories = @(
+        [Microsoft.Azure.Commands.Insights.OutputClasses.PSServiceDiagnosticSettings]
+    )
+
+    $log = @()
+    $log += New-AzDiagnosticSettingLogSettingsObject \`
+        -Category "AuditEvent" \`
+        -Enabled $true \`
+        -RetentionPolicyDay 365 \`
+        -RetentionPolicyEnabled $true
+
+    $log += New-AzDiagnosticSettingLogSettingsObject \`
+        -Category "AzurePolicyEvaluationDetails" \`
+        -Enabled $true \`
+        -RetentionPolicyDay 365 \`
+        -RetentionPolicyEnabled $true
+
+    $metric = New-AzDiagnosticSettingMetricSettingsObject \`
+        -Category "AllMetrics" \`
+        -Enabled $true \`
+        -RetentionPolicyDay 365 \`
+        -RetentionPolicyEnabled $true
+
+    New-AzDiagnosticSetting \`
+        -Name "fedramp-diag-to-law" \`
+        -ResourceId $kv.ResourceId \`
+        -WorkspaceId $workspaceId \`
+        -Log $log \`
+        -Metric $metric
+
+    Write-Host "[+] Diagnostic settings applied to: $($kv.VaultName)" -ForegroundColor Green
+}
+
+# Enumerate AKS clusters and apply similarly
+$aksClusters = Get-AzAksCluster -ResourceGroupName "rg-fedramp-aks"
+foreach ($aks in $aksClusters) {
+    $aksLog = @()
+    $aksLog += New-AzDiagnosticSettingLogSettingsObject -Category "kube-apiserver" -Enabled $true -RetentionPolicyDay 365 -RetentionPolicyEnabled $true
+    $aksLog += New-AzDiagnosticSettingLogSettingsObject -Category "kube-audit" -Enabled $true -RetentionPolicyDay 365 -RetentionPolicyEnabled $true
+    $aksLog += New-AzDiagnosticSettingLogSettingsObject -Category "kube-audit-admin" -Enabled $true -RetentionPolicyDay 365 -RetentionPolicyEnabled $true
+    $aksLog += New-AzDiagnosticSettingLogSettingsObject -Category "guard" -Enabled $true -RetentionPolicyDay 365 -RetentionPolicyEnabled $true
+
+    New-AzDiagnosticSetting \`
+        -Name "fedramp-aks-diag-to-law" \`
+        -ResourceId $aks.Id \`
+        -WorkspaceId $workspaceId \`
+        -Log $aksLog
+
+    Write-Host "[+] AKS diagnostics applied to: $($aks.Name)" -ForegroundColor Cyan
+}`,
+    },
+  ]}
+  copyButton
+/>
+
+---
+
+## Step 3: FedRAMP-Aligned KQL Queries for Continuous Monitoring
+
+Collecting logs is only half the battle. For SI-4 and IR-5, you need continuous monitoring queries that surface security-relevant events. Here are the KQL queries I deploy as Sentinel Scheduled Analytics Rules and saved searches in every FedRAMP High environment I manage:
+
+<CodeBlock
+  className="custom-code-block"
+  liveEditor
+  codeInstances={[
+    {
+      label: "FedRAMP-KQL-Queries.kql",
+      language: "kusto",
+      code: `// ============================================================
+// FedRAMP High - KQL Continuous Monitoring Queries
+// Controls: AU-6, SI-4, IR-5, AC-17
+// Deploy as Sentinel Scheduled Analytics Rules
+// ============================================================
+
+// --- 1. Privileged Role Assignment Changes (AC-2, AC-6) ---
+AuditLogs
+| where TimeGenerated > ago(1h)
+| where OperationName in (
+    "Add member to role",
+    "Remove member from role",
+    "Add eligible member to role"
+  )
+| extend InitiatedByUser = tostring(InitiatedBy.user.userPrincipalName)
+| extend TargetUser = tostring(TargetResources[0].userPrincipalName)
+| extend RoleName = tostring(TargetResources[0].displayName)
+| where RoleName in (
+    "Global Administrator",
+    "Security Administrator",
+    "User Access Administrator",
+    "Owner",
+    "Privileged Role Administrator"
+  )
+| project TimeGenerated, InitiatedByUser, TargetUser, RoleName, Result, CorrelationId
+| order by TimeGenerated desc
+
+// --- 2. Key Vault Access Anomalies (SC-12, AU-2) ---
+AzureDiagnostics
+| where ResourceType == "VAULTS" and Category == "AuditEvent"
+| where ResultType == "Success"
+| where OperationName in ("SecretGet", "KeySign", "KeyDecrypt", "KeyUnwrapKey")
+| summarize AccessCount = count() by CallerIPAddress, identity_claim_oid_g, bin(TimeGenerated, 1h)
+| where AccessCount > 50   // Threshold — tune per environment
+| order by AccessCount desc
+
+// --- 3. AKS API Server Unauthorized Calls (SI-4, CM-7) ---
+AzureDiagnostics
+| where Category == "kube-audit"
+| extend AuditLog = parse_json(log_s)
+| where AuditLog.verb in ("create", "delete", "patch", "update")
+| where AuditLog.responseStatus.code in (403, 401)
+| extend UserAgent = tostring(AuditLog.userAgent)
+| extend User = tostring(AuditLog.user.username)
+| extend Resource = tostring(AuditLog.objectRef.resource)
+| extend Namespace = tostring(AuditLog.objectRef.namespace)
+| where Namespace !in ("kube-system", "gatekeeper-system")  // Exclude known system namespaces
+| summarize FailedCalls = count() by User, Resource, Namespace, bin(TimeGenerated, 15m)
+| where FailedCalls > 5
+| order by FailedCalls desc
+
+// --- 4. Log Workspace Purge / Deletion Attempts (AU-9) ---
+AzureActivity
+| where TimeGenerated > ago(24h)
+| where ResourceProviderValue == "MICROSOFT.OPERATIONALINSIGHTS"
+| where OperationNameValue in (
+    "MICROSOFT.OPERATIONALINSIGHTS/WORKSPACES/DELETE",
+    "MICROSOFT.OPERATIONALINSIGHTS/WORKSPACES/PURGE/ACTION"
+  )
+| extend CallerInfo = Caller
+| project TimeGenerated, CallerInfo, OperationNameValue, ResourceGroup, ActivityStatusValue
+| order by TimeGenerated desc
+
+// --- 5. MFA Bypass / Legacy Authentication (IA-2, IA-5) ---
+SigninLogs
+| where TimeGenerated > ago(1h)
+| where AuthenticationRequirement == "singleFactorAuthentication"
+| where ResultType == 0  // Successful sign-in
+| where AppDisplayName !in ("Azure PowerShell", "Azure CLI")  // Known service principals
+| extend ClientAppUsed_clean = iff(
+    ClientAppUsed in ("Exchange ActiveSync", "IMAP4", "POP3", "SMTP"),
+    "LegacyAuth", ClientAppUsed
+  )
+| where ClientAppUsed_clean == "LegacyAuth"
+| project TimeGenerated, UserPrincipalName, IPAddress, ClientAppUsed, AppDisplayName, Location
+| order by TimeGenerated desc`,
+    },
+  ]}
+  copyButton
+/>
+
+---
+
+## Key
