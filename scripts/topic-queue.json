@@ -36,6 +36,7 @@
     "zero-trust-network-architecture-azure-govcloud",
     "azure-arc-kubernetes-dod-il5-compliance",
     "devsecops-pipeline-aqua-security-aks",
-    "fedramp-high-log-analytics-workspace-design"
+    "fedramp-high-log-analytics-workspace-design",
+    "azure-private-link-govcloud-data-exfiltration-prevention"
   ]
 }
