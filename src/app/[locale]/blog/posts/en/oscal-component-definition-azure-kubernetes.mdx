@@ -1,0 +1,285 @@
+---
+title: "Oscal Component Definition Azure Kubernetes"
+publishedAt: "2026-10-12"
+summary: "A deep-dive into oscal component definition azure kubernetes for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Kubernetes"
+---
+
+## OSCAL Component Definition for Azure Kubernetes: Automating FedRAMP Compliance at Machine Speed
+
+If you're running containerized workloads in Azure Government or GCC High and you're still managing your System Security Plan (SSP) in Word documents, you're leaving compliance debt on the table — and that debt compounds fast in a FedRAMP or DoD IL4/IL5 environment. OSCAL (Open Security Controls Assessment Language) is the NIST-standardized, machine-readable format that changes that equation entirely. In this post, I'll walk you through building a complete OSCAL Component Definition for an Azure Kubernetes Service (AKS) cluster, wiring it into your DevSecOps pipeline, and mapping it directly to the controls that matter for your ATO package.
+
+---
+
+## What Is an OSCAL Component Definition and Why It Matters for FedRAMP/DoD
+
+OSCAL is a suite of JSON/XML/YAML schemas published by NIST under SP 800-180 and maintained at [github.com/usnistgov/OSCAL](https://github.com/usnistgov/OSCAL). The **Component Definition** layer specifically describes how a discrete technology component — in our case, AKS — implements specific NIST 800-53 Rev 5 controls. Think of it as a machine-readable "control implementation statement" that can be ingested by tools like XSLT processors, Trestle CLI, or agency-built SSP automation pipelines.
+
+Here's why this matters immediately for your environment:
+
+- **FedRAMP 20x and OMB M-24-15** are pushing agencies toward continuous ATO (cATO), which requires machine-readable evidence, not static PDFs
+- **DoD DISA RMF** artifacts are increasingly expected in OSCAL format for IL4/IL5 packages
+- An OSCAL Component Definition for AKS can be reused across every system that deploys AKS, eliminating duplicated control narrative across multiple SSPs
+- Tools like **NIST OSCAL Trestle** (from IBM's open-source project, not a hallucination — it's at [github.com/IBM/compliance-trestle](https://github.com/IBM/compliance-trestle)) can validate, diff, and assemble these definitions programmatically
+
+The AKS component definition sits at the intersection of several control families: **AC (Access Control), AU (Audit), CM (Configuration Management), SC (System and Communications Protection), and SI (System and Information Integrity)**. Getting this right once means your SSP assembly pipeline pulls accurate, versioned control statements every time you spin up a new AKS cluster.
+
+---
+
+## Environment Prerequisites
+
+Before writing a single line of OSCAL, ensure your environment is configured:
+
+- Azure CLI 2.55+ with `aks-preview` extension
+- `oscal-cli` or `trestle` CLI installed (pip install compliance-trestle)
+- An AKS cluster in Azure Government (`az cloud set --name AzureUSGovernment`)
+- Access to the FedRAMP High baseline in OSCAL format (available at [github.com/GSA/fedramp-automation](https://github.com/GSA/fedramp-automation))
+
+---
+
+## Step 1: Harden Your AKS Cluster to Match Your Component Definition Claims
+
+Your OSCAL Component Definition is only credible if your cluster actually implements what you claim. I always start by deploying the cluster with hardening baked in before writing a single OSCAL statement. Here's the Bicep module I use for an IL4-aligned AKS deployment:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `// aks-hardened.bicep - IL4/FedRAMP High aligned AKS cluster
+param clusterName string = 'aks-fedramp-prod'
+param location string = 'usgovvirginia'
+param logAnalyticsWorkspaceId string
+param subnetId string
+param aadGroupObjectId string
+
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-02-01' = {
+  name: clusterName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    kubernetesVersion: '1.29.2'
+    dnsPrefix: '${clusterName}-dns'
+    
+    agentPoolProfiles: [
+      {
+        name: 'systempool'
+        count: 3
+        vmSize: 'Standard_D4s_v5'
+        osDiskSizeGB: 128
+        osDiskType: 'Ephemeral'  // CM-6: reduces persistent attack surface
+        vnetSubnetID: subnetId
+        enableNodePublicIP: false  // SC-7: no direct internet exposure
+        mode: 'System'
+        osType: 'Linux'
+        osSKU: 'AzureLinux'
+        enableEncryptionAtHost: true  // SC-28: encryption at rest for node disks
+        nodeTaints: ['CriticalAddonsOnly=true:NoSchedule']
+      }
+    ]
+
+    // AC-2, AC-3: Azure AD integration with RBAC
+    aadProfile: {
+      managed: true
+      enableAzureRBAC: true
+      adminGroupObjectIDs: [aadGroupObjectId]
+      tenantID: subscription().tenantId
+    }
+
+    // SC-7: Network policy enforcement (Calico)
+    networkProfile: {
+      networkPlugin: 'azure'
+      networkPolicy: 'calico'
+      outboundType: 'userDefinedRouting'  // Force egress through firewall
+      loadBalancerSku: 'standard'
+    }
+
+    // AU-2, AU-12: Enable all diagnostic logging
+    addonProfiles: {
+      omsagent: {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
+        }
+      }
+      azurepolicy: {
+        enabled: true  // CM-6, CM-7: Azure Policy for Kubernetes
+      }
+      azureKeyvaultSecretsProvider: {
+        enabled: true  // SC-12, SC-28: Secrets management via Key Vault
+        config: {
+          enableSecretRotation: 'true'
+          rotationPollInterval: '2m'
+        }
+      }
+    }
+
+    // SI-2: Auto-upgrade configuration
+    autoUpgradeProfile: {
+      upgradeChannel: 'patch'
+    }
+
+    // SC-28: Enable private cluster
+    apiServerAccessProfile: {
+      enablePrivateCluster: true
+      privateDNSZone: 'system'
+      enablePrivateClusterPublicFQDN: false
+    }
+
+    // CM-6: Disable local accounts
+    disableLocalAccounts: true
+
+    // SC-28: Azure Disk Encryption at rest
+    storageProfile: {
+      diskCSIDriver: {
+        enabled: true
+      }
+    }
+  }
+}
+
+output clusterPrincipalId string = aksCluster.identity.principalId
+output clusterName string = aksCluster.name`, label: "aks-hardened.bicep", language: "bicep" }]} copyButton />
+
+Deploy this with:
+
+```bash
+az deployment group create \
+  --resource-group rg-fedramp-prod \
+  --template-file aks-hardened.bicep \
+  --parameters clusterName=aks-fedramp-prod \
+               logAnalyticsWorkspaceId="/subscriptions/<sub-id>/resourceGroups/rg-monitoring/providers/Microsoft.OperationalInsights/workspaces/law-fedramp" \
+               subnetId="/subscriptions/<sub-id>/resourceGroups/rg-network/providers/Microsoft.Network/virtualNetworks/vnet-prod/subnets/snet-aks" \
+               aadGroupObjectId="<your-aad-group-object-id>" \
+  --cloud-name AzureUSGovernment
+```
+
+---
+
+## Step 2: Build the OSCAL Component Definition
+
+Now that the cluster is deployed and hardened, I translate those implementation decisions into a machine-readable OSCAL Component Definition. This JSON document becomes a reusable artifact in your ATO package and can be ingested by any OSCAL-aware tool.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `{
+  "component-definition": {
+    "uuid": "a9d4e2f1-7b3c-4d8e-9f2a-1c5e7d3b8f4a",
+    "metadata": {
+      "title": "Azure Kubernetes Service (AKS) - FedRAMP High Component Definition",
+      "last-modified": "2024-11-01T00:00:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.2",
+      "roles": [
+        { "id": "prepared-by", "title": "Cloud Security Architect" },
+        { "id": "reviewed-by", "title": "Authorizing Official Designated Representative" }
+      ],
+      "parties": [
+        {
+          "uuid": "b1c2d3e4-f5a6-7890-abcd-ef1234567890",
+          "type": "organization",
+          "name": "Agency Cloud Platform Team"
+        }
+      ]
+    },
+    "components": [
+      {
+        "uuid": "c3d4e5f6-a7b8-9012-cdef-123456789abc",
+        "type": "software",
+        "title": "Azure Kubernetes Service (AKS)",
+        "description": "Managed Kubernetes orchestration platform deployed in Azure Government with FedRAMP High and DoD IL4 hardening applied per STIG AKS and CIS Kubernetes Benchmark.",
+        "props": [
+          { "name": "version", "value": "1.29.2" },
+          { "name": "cloud-environment", "value": "Azure Government (usgovvirginia)" },
+          { "name": "deployment-model", "value": "Private Cluster - UserDefinedRouting Egress" },
+          { "name": "fedramp-impact-level", "value": "High" }
+        ],
+        "control-implementations": [
+          {
+            "uuid": "d4e5f6a7-b8c9-0123-defa-234567890bcd",
+            "source": "https://raw.githubusercontent.com/GSA/fedramp-automation/master/dist/content/rev5/baselines/json/FedRAMP_rev5_HIGH-baseline-resolved-profile_catalog.json",
+            "description": "FedRAMP High Rev 5 Control Implementations for AKS",
+            "implemented-requirements": [
+              {
+                "uuid": "e5f6a7b8-c9d0-1234-efab-345678901cde",
+                "control-id": "ac-2",
+                "description": "AKS enforces account management through Azure Active Directory integration with Azure RBAC enabled (disableLocalAccounts: true). All cluster access requires Azure AD authentication. Administrative accounts are managed through AAD groups with Privileged Identity Management (PIM) for just-in-time access. Service accounts use Workload Identity (federated credentials) rather than long-lived tokens.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "hybrid" }
+                ]
+              },
+              {
+                "uuid": "f6a7b8c9-d0e1-2345-fabc-456789012def",
+                "control-id": "au-2",
+                "description": "AKS diagnostic settings stream kube-apiserver, kube-audit, kube-audit-admin, kube-controller-manager, kube-scheduler, cluster-autoscaler, and guard logs to Azure Monitor Log Analytics Workspace. The OMS Agent (Container Insights) captures container stdout/stderr, performance metrics, and node-level events. All audit events include user identity, timestamp, source IP, resource, and action taken.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "inherited" }
+                ]
+              },
+              {
+                "uuid": "a7b8c9d0-e1f2-3456-abcd-567890123efa",
+                "control-id": "cm-6",
+                "description": "AKS configuration baselines are enforced through Azure Policy for Kubernetes (Gatekeeper OPA). Policies enforce: no privileged containers, required resource limits, approved base image registries only (Azure Container Registry with Defender for Containers enabled), no host network/PID/IPC access, mandatory pod security standards (restricted profile), and required labels for workload identity. Configuration is managed as IaC via Bicep in a GitOps pipeline with branch protection and required CODEOWNERS approval.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "hybrid" }
+                ]
+              },
+              {
+                "uuid": "b8c9d0e1-f2a3-4567-bcde-678901234fab",
+                "control-id": "sc-7",
+                "description": "AKS deployed in private cluster mode with API server only accessible via Private Endpoint on approved subnets. Calico network policies enforce microsegmentation between namespaces. All egress routes through Azure Firewall Premium (IDPS enabled) via UDR. Node pools have no public IP assignment. NSGs restrict intra-cluster communication to required ports only.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "hybrid" }
+                ]
+              },
+              {
+                "uuid": "c9d0e1f2-a3b4-5678-cdef-789012345abc",
+                "control-id": "sc-28",
+                "description": "Encryption at host is enabled for all AKS node pools, encrypting temporary disk, OS disk cache, and data disk cache using platform-managed keys stored in Azure Key Vault (FIPS 140-2 Level 2 HSM). Kubernetes Secrets are encrypted at rest using AKS etcd encryption with a customer-managed key in Key Vault. The Azure Key Vault Secrets Provider CSI driver rotates secrets every 2 minutes.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "hybrid" }
+                ]
+              },
+              {
+                "uuid": "d0e1f2a3-b4c5-6789-defa-890123456bcd",
+                "control-id": "si-2",
+                "description": "AKS patch upgrade channel set to 'patch' enabling automatic node OS patching within the maintenance window. Node image auto-upgrade is configured to 'NodeImage' channel. Microsoft Defender for Containers provides runtime vulnerability scanning of container images and generates alerts for CVEs with CVSS >= 7.0. Image vulnerability scanning is enforced at admission via Azure Policy, blocking images with critical vulnerabilities.",
+                "props": [
+                  { "name": "implementation-status", "value": "implemented" },
+                  { "name": "control-origination", "value": "hybrid" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}`, label: "aks-component-definition.json", language: "json" }]} copyButton />
+
+---
+
+## Step 3: Validate and Integrate with Trestle CLI
+
+Writing OSCAL by hand is error-prone. I validate every component definition through the compliance-trestle CLI before it touches a pipeline:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `#!/bin/bash
+# validate-and-import-oscal.sh
+# Requires: pip install compliance-trestle
+
+set -euo pipefail
+
+COMPONENT_DEF="aks-component-definition.json"
+TRESTLE_WORKSPACE="./trestle-workspace"
+
+echo "=== Step 1: Initialize Trestle Workspace ==="
+mkdir -p "${TRESTLE_WORKSPACE}"
+cd "${TRESTLE_WORKSPACE}"
+trestle init
+
+echo "=== Step 2: Import AKS Component Definition ==="
+trestle import \
+  --file "../${COMPONENT_DEF}" \
+  --output "aks-component"
+
+echo "===
