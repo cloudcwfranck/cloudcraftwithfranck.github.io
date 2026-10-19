@@ -38,6 +38,7 @@
     "devsecops-pipeline-aqua-security-aks",
     "fedramp-high-log-analytics-workspace-design",
     "azure-private-link-govcloud-data-exfiltration-prevention",
-    "oscal-component-definition-azure-kubernetes"
+    "oscal-component-definition-azure-kubernetes",
+    "stig-hardened-vm-images-azure-packer"
   ]
 }

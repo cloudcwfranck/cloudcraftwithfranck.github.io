@@ -1,0 +1,338 @@
+---
+title: "Stig Hardened Vm Images Azure Packer"
+publishedAt: "2026-10-19"
+summary: "A deep-dive into stig hardened vm images azure packer for FedRAMP and DoD environments — covering implementation, compliance controls, and DevSecOps integration."
+tag: "Azure"
+---
+
+## Why STIG-Hardened VM Images Are Non-Negotiable in FedRAMP and DoD Environments
+
+If you're operating in a DoD IL4/IL5 or FedRAMP High environment, shipping unvalidated OS images to production is a compliance liability you cannot afford. The Defense Information Systems Agency (DISA) Security Technical Implementation Guides (STIGs) aren't suggestions — they're mandates. And yet, I see teams manually running SCC scans post-deployment, treating hardening as an afterthought. That's backwards.
+
+The correct approach is to bake STIG compliance directly into your VM images using HashiCorp Packer against Azure Compute Gallery (formerly Shared Image Gallery), so every VM spun up from that golden image is hardened at birth. This post walks you through exactly how to build that pipeline.
+
+---
+
+## What STIG Hardening with Packer Actually Means
+
+STIG hardening is the systematic application of DISA-published configuration baselines to an operating system. For Azure government workloads, this typically means:
+
+- **Windows Server 2022 STIG** (V1R4+) — 300+ controls covering auditing, account policy, Windows Firewall, and more
+- **RHEL 8/9 STIG** — covering SELinux enforcement, PAM configuration, sysctl hardening, and FIPS 140-2 enablement
+- **Ubuntu 20.04/22.04 LTS STIG** — CIS-aligned with DoD overlays
+
+HashiCorp Packer is the image factory. It spins up a temporary Azure VM, runs your provisioners (PowerShell, Ansible, shell scripts), applies STIG controls, validates with SCAP/SCC, and captures the result into Azure Compute Gallery as a versioned, immutable image artifact. That image becomes your compliance-stamped golden image.
+
+This directly addresses a core DevSecOps principle: **shift security left into the image build pipeline**, not into post-deployment remediation.
+
+---
+
+## NIST 800-53 Controls This Addresses
+
+Before writing a single line of Packer HCL, understand what you're satisfying. STIG-hardened images contribute to the following NIST 800-53 Rev 5 control families relevant to FedRAMP High and DoD IL5:
+
+| Control Family | Control IDs | What STIG Hardening Covers |
+|---|---|---|
+| Configuration Management | CM-2, CM-6, CM-7 | Baseline configurations, least functionality |
+| Access Control | AC-2, AC-3, AC-17 | Account restrictions, remote access controls |
+| Audit and Accountability | AU-2, AU-9, AU-12 | Audit event logging, log protection |
+| System and Communications Protection | SC-28, SC-39 | FIPS, process isolation |
+| Identification and Authentication | IA-5, IA-7 | Password complexity, cryptographic module auth |
+| Risk Assessment | RA-5 | Vulnerability scanning integration |
+
+**CM-6** (Configuration Settings) is the anchor. FedRAMP requires you to document and enforce baseline configurations for all operating system components. A Packer-built STIG image is your documented, reproducible artifact that proves CM-6 compliance at scale.
+
+---
+
+## Prerequisites and Azure Environment Setup
+
+I'll assume you're working in **Azure Government (MAG)** with access to Azure Compute Gallery. You need:
+
+- Packer 1.10+ installed locally or in your CI/CD runner
+- Azure CLI authenticated to your government tenant
+- A resource group for image building
+- Managed identity or service principal with `Contributor` on the build RG and `Contributor` on the Compute Gallery
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# Authenticate to Azure Government
+az cloud set --name AzureUSGovernment
+az login --tenant <your-dod-tenant-id>
+
+# Create resource group for Packer builds
+az group create \
+  --name rg-packer-stig-builds \
+  --location usgovvirginia \
+  --tags Environment=Production Classification=IL4 Owner=CloudSec
+
+# Create Azure Compute Gallery
+az sig create \
+  --resource-group rg-packer-stig-builds \
+  --gallery-name sigSTIGHardened \
+  --location usgovvirginia \
+  --description "STIG-hardened golden images for IL4/IL5 workloads"
+
+# Create image definition for Windows Server 2022
+az sig image-definition create \
+  --resource-group rg-packer-stig-builds \
+  --gallery-name sigSTIGHardened \
+  --gallery-image-definition win2022-stig-hardened \
+  --publisher DoD-CloudSec \
+  --offer WindowsServer \
+  --sku 2022-STIG \
+  --os-type Windows \
+  --hyper-v-generation V2 \
+  --features SecurityType=TrustedLaunch \
+  --location usgovvirginia
+
+# Create service principal for Packer
+az ad sp create-for-rbac \
+  --name sp-packer-stig-builder \
+  --role Contributor \
+  --scopes /subscriptions/<subscription-id>/resourceGroups/rg-packer-stig-builds \
+  --output json`, label: "Azure CLI Setup", language: "bash" }]} copyButton />
+
+Store the SP credentials in Azure Key Vault or your pipeline secrets manager — never in source code.
+
+---
+
+## Writing the Packer HCL Template
+
+This is the core of the pipeline. I structure Packer templates with separate variable files for environment parity across dev, staging, and production build environments.
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# windows-2022-stig.pkr.hcl
+
+packer {
+  required_plugins {
+    azure = {
+      source  = "github.com/hashicorp/azure"
+      version = "~> 2.0"
+    }
+  }
+}
+
+variable "subscription_id" { type = string }
+variable "client_id"        { type = string }
+variable "client_secret"    { type = string sensitive = true }
+variable "tenant_id"        { type = string }
+variable "image_version"    { type = string default = "1.0.0" }
+variable "resource_group"   { type = string default = "rg-packer-stig-builds" }
+
+source "azure-arm" "win2022_stig" {
+  # Auth
+  subscription_id = var.subscription_id
+  client_id       = var.client_id
+  client_secret   = var.client_secret
+  tenant_id       = var.tenant_id
+
+  # Source image - use Azure Marketplace
+  image_publisher = "MicrosoftWindowsServer"
+  image_offer     = "WindowsServer"
+  image_sku       = "2022-datacenter-azure-edition-core"
+  image_version   = "latest"
+
+  # Build VM config
+  vm_size                           = "Standard_D4s_v5"
+  os_type                           = "Windows"
+  communicator                      = "winrm"
+  winrm_insecure                    = true
+  winrm_use_ssl                     = true
+  winrm_timeout                     = "10m"
+
+  # Managed disk and security
+  managed_image_resource_group_name = var.resource_group
+  managed_image_name                = "win2022-stig-temp"
+  os_disk_size_gb                   = 128
+  
+  # Security Type - required for Trusted Launch (UEFI + vTPM)
+  security_type                     = "TrustedLaunch"
+  enable_secure_boot                = true
+  enable_vtpm                       = true
+
+  # Publish to Azure Compute Gallery
+  shared_image_gallery_destination {
+    subscription        = var.subscription_id
+    resource_group      = var.resource_group
+    gallery_name        = "sigSTIGHardened"
+    image_name          = "win2022-stig-hardened"
+    image_version       = var.image_version
+    replication_regions = ["usgovvirginia", "usgovtexas"]
+    storage_account_type = "Premium_LRS"
+  }
+
+  # Build tags for compliance tracking
+  azure_tags = {
+    STIGVersion    = "WN22-V1R4"
+    BuildDate      = "{{timestamp}}"
+    Hardened       = "true"
+    FedRAMP        = "High"
+    Classification = "IL4"
+    Pipeline       = "DevSecOps"
+  }
+}
+
+build {
+  name    = "stig-hardened-windows-2022"
+  sources = ["source.azure-arm.win2022_stig"]
+
+  # Step 1: Install Windows Updates first
+  provisioner "powershell" {
+    inline = [
+      "Write-Host 'Installing Windows Updates...'",
+      "Install-Module PSWindowsUpdate -Force -Confirm:$false",
+      "Import-Module PSWindowsUpdate",
+      "Get-WindowsUpdate -AcceptAll -Install -AutoReboot | Out-File C:\\packer-updates.log"
+    ]
+  }
+
+  provisioner "windows-restart" {
+    restart_timeout = "30m"
+  }
+
+  # Step 2: Apply STIG via PowerShell DSC / LGPO
+  provisioner "powershell" {
+    scripts = [
+      "scripts/windows/01-enable-fips.ps1",
+      "scripts/windows/02-apply-stig-lgpo.ps1",
+      "scripts/windows/03-configure-audit-policy.ps1",
+      "scripts/windows/04-harden-services.ps1",
+      "scripts/windows/05-configure-windows-firewall.ps1"
+    ]
+    elevated_user     = "SYSTEM"
+    elevated_password = ""
+  }
+
+  provisioner "windows-restart" {
+    restart_timeout = "15m"
+  }
+
+  # Step 3: Run SCAP/SCC validation - fail build if CAT I findings exist
+  provisioner "powershell" {
+    scripts = ["scripts/windows/06-run-scc-scan.ps1"]
+  }
+
+  # Step 4: Generalize (sysprep)
+  provisioner "powershell" {
+    inline = [
+      "& $env:SystemRoot\\System32\\Sysprep\\Sysprep.exe /oobe /generalize /quiet /quit /mode:vm",
+      "while($true) { $imageState = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Setup\\State' | Select-Object ImageState; if($imageState.ImageState -ne 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE') { Write-Output $imageState.ImageState; Start-Sleep -s 10 } else { break } }"
+    ]
+  }
+}`, label: "Packer HCL Template", language: "hcl" }]} copyButton />
+
+---
+
+## The STIG Application Scripts
+
+The LGPO (Local Group Policy Object) utility from DISA is your best friend for Windows STIG application. Here's the core script pattern I use for `02-apply-stig-lgpo.ps1`:
+
+<CodeBlock className="custom-code-block" liveEditor codeInstances={[{ code: `# 02-apply-stig-lgpo.ps1
+# Applies DISA STIG baselines via LGPO.exe
+# Reference: DISA Windows Server 2022 STIG V1R4
+# NIST 800-53 Controls: CM-6, CM-7, AC-2, AU-2
+
+param(
+  [string]$STIGPath = "C:\\STIG",
+  [string]$LGPOPath = "C:\\Tools\\LGPO.exe"
+)
+
+Set-ExecutionPolicy Bypass -Scope Process -Force
+$ErrorActionPreference = "Stop"
+
+Write-Host "[STIG] Starting LGPO application - $(Get-Date)"
+
+# Download LGPO from your internal artifact store (never from internet in airgapped env)
+# Assumes LGPO.exe is pre-staged in the Packer file provisioner
+if (-not (Test-Path $LGPOPath)) {
+    throw "LGPO.exe not found at $LGPOPath. Failing build."
+}
+
+# Apply Machine Policy
+Write-Host "[STIG] Applying Machine STIG Policy..."
+& $LGPOPath /m "$STIGPath\GPOs\{GUID}\Machine\registry.pol" 2>&1 | Tee-Object -FilePath "C:\\packer-lgpo.log" -Append
+
+# Apply User Policy
+Write-Host "[STIG] Applying User STIG Policy..."
+& $LGPOPath /u "$STIGPath\GPOs\{GUID}\User\registry.pol" 2>&1 | Tee-Object -FilePath "C:\\packer-lgpo.log" -Append
+
+# Apply Security Template (secedit)
+Write-Host "[STIG] Applying Security Template..."
+secedit /configure /db C:\Windows\security\local.sdb /cfg "$STIGPath\Templates\WN22_STIG.inf" /log C:\packer-secedit.log /quiet
+
+# Enable FIPS cryptography - NIST IA-7
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy" `
+  -Name "Enabled" -Value 1 -Type DWord -Force
+
+# Enforce NTLMv2 only - NIST IA-5
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+  -Name "LmCompatibilityLevel" -Value 5 -Type DWord -Force
+
+# Disable SMBv1 - WN22-000010
+Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+
+# Configure Windows Defender - CM-6
+Set-MpPreference -DisableRealtimeMonitoring $false
+Set-MpPreference -MAPSReporting Advanced
+Set-MpPreference -SubmitSamplesConsent SendSafeSamples
+Update-MpSignature
+
+# Validate critical STIG settings post-application
+$fipsEnabled = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy").Enabled
+if ($fipsEnabled -ne 1) {
+    throw "[STIG FAILURE] FIPS not enabled. Build aborted. NIST IA-7 violation."
+}
+
+Write-Host "[STIG] LGPO application complete - $(Get-Date)"
+Write-Host "[STIG] Review logs at C:\\packer-lgpo.log and C:\\packer-secedit.log"
+
+# Run gpupdate to enforce
+gpupdate /force 2>&1 | Out-File "C:\\packer-gpupdate.log"`, label: "STIG Application Script", language: "powershell" }]} copyButton />
+
+---
+
+## Integrating Into Azure DevOps CI/CD Pipeline
+
+The image build should be triggered automatically on a schedule (monthly, to incorporate new STIG releases) and on any changes to the build scripts. Here's the Azure DevOps pipeline YAML that wires everything together:
+
+```yaml
+# azure-pipelines-stig-image.yml
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - packer/**
+      - scripts/**
+
+schedules:
+  - cron: "0 2 1 * *"
+    displayName: Monthly STIG Image Rebuild
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  name: 'gov-cloud-agents'
+  demands:
+    - packer
+    - az
+
+variables:
+  - group: stig-image-build-secrets  # Key Vault linked variable group
+  - name: IMAGE_VERSION
+    value: '1.$(Build.BuildId).0'
+
+stages:
+  - stage: ValidatePacker
+    jobs:
+      - job: PackerValidate
+        steps:
+          - task: PackerTool@0
+            inputs:
+              version: '1.10.3'
+          - script: |
+              packer init packer/windows-2022-stig.pkr.hcl
+              packer validate \
+                -var "subscription_id=$(ARM_SUBSCRIPTION_ID)" \
+                -var "client_id=$(ARM_CLIENT_ID)" \
+                -var "client
